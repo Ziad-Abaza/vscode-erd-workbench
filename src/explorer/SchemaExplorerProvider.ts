@@ -1,8 +1,12 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SchemaCatalogService } from '../schema/SchemaCatalogService';
+import { DiagramStorageService } from '../diagram/DiagramStorageService';
 
 export type ExplorerNodeKind =
+  | 'diagramsRoot'
+  | 'diagram'
+  | 'connectionsRoot'
   | 'connection'
   | 'connectionActive'
   | 'schema'
@@ -36,7 +40,8 @@ export class SchemaExplorerProvider implements vscode.TreeDataProvider<ExplorerN
 
   constructor(
     private readonly connections: ConnectionManager,
-    private readonly catalog: SchemaCatalogService
+    private readonly catalog: SchemaCatalogService,
+    private readonly diagrams: DiagramStorageService
   ) {
     connections.onDidChange(() => this.refresh());
     catalog.onDidChange(() => this.refresh());
@@ -52,6 +57,38 @@ export class SchemaExplorerProvider implements vscode.TreeDataProvider<ExplorerN
 
   async getChildren(element?: ExplorerNode): Promise<ExplorerNode[]> {
     if (!element) {
+      return [
+        new ExplorerNode('Saved Diagrams', vscode.TreeItemCollapsibleState.Expanded, 'diagramsRoot'),
+        new ExplorerNode('Connections', vscode.TreeItemCollapsibleState.Expanded, 'connectionsRoot'),
+      ];
+    }
+
+    if (element.kind === 'diagramsRoot') {
+      const list = await this.diagrams.list();
+      if (!list.length) {
+        const empty = new ExplorerNode(
+          'No diagrams yet — Reverse Engineer a schema',
+          vscode.TreeItemCollapsibleState.None,
+          'diagram'
+        );
+        empty.description = 'private storage';
+        return [empty];
+      }
+      return list.map((d) => {
+        const n = new ExplorerNode(d.name, vscode.TreeItemCollapsibleState.None, 'diagram', d.connectionId, undefined, undefined, d);
+        n.description = d.updatedAt ? d.updatedAt.slice(0, 10) : undefined;
+        n.iconPath = new vscode.ThemeIcon('type-hierarchy-sub');
+        n.command = {
+          command: 'erdWorkbench.openStoredDiagram',
+          title: 'Open Diagram',
+          arguments: [d.uri],
+        };
+        n.tooltip = `Stored privately in extension storage\n${d.uri.fsPath}`;
+        return n;
+      });
+    }
+
+    if (element.kind === 'connectionsRoot') {
       return this.connections.listProfiles().map((p) => {
         const active = this.connections.isConnected(p.id);
         const node = new ExplorerNode(

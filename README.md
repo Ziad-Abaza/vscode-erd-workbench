@@ -57,14 +57,23 @@ npm test
 
 Press **F5** (`Run ERD Workbench Extension`) to launch an Extension Development Host.
 
+## Diagram storage (private — not in your project)
+
+Diagrams are saved in **VS Code / Cursor extension storage** (`workspaceStorage` / `globalStorage`), not as files inside your repo.
+
+- Appear under **Saved Diagrams** in the ERD Workbench sidebar
+- Do not show up as `*.erd.json` in the project tree
+- Optional: **Export Diagram to Workspace…** only when you explicitly want a project file
+
 ## Typical workflow
 
 1. **ERD Workbench: Add Connection** → Connect
 2. Refresh catalog / expand explorer
-3. **Reverse Engineer Schema to Diagram**
-4. Arrange tables, filter, auto-layout selection
-5. Open a `.sql` file → **Execute SQL** (destructive statements prompt for confirmation)
-6. **Schema Diff** / **Export Schema** as needed
+3. **Reverse Engineer Schema to Diagram** (opens from private storage)
+4. Re-open later from **Saved Diagrams**
+5. Arrange tables, filter, pages, auto-layout
+6. Open a `.sql` file → **Execute SQL** (destructive statements prompt for confirmation)
+7. **Schema Diff** / **Export Schema** as needed
 
 ## Agents / CLI (realtime diagram control)
 

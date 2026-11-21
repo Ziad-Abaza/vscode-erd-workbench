@@ -295,22 +295,15 @@ export function parseDocument(text: string): ErdDocument {
   return doc;
 }
 
-export async function openDiagramDocument(doc: ErdDocument, folder?: vscode.Uri): Promise<void> {
-  const workspace =
-    folder ?? vscode.workspace.workspaceFolders?.[0]?.uri ?? undefined;
-  const name = `${doc.name.replace(/[^\w.-]+/g, '_')}.erd.json`;
-  const uri = workspace
-    ? vscode.Uri.joinPath(workspace, name)
-    : vscode.Uri.parse(`untitled:${name}`);
-  const content = JSON.stringify(doc, null, 2);
-  if (workspace) {
-    await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
-    await vscode.commands.executeCommand('vscode.openWith', uri, ErdTextEditorProvider.viewType);
-  } else {
-    const docText = await vscode.workspace.openTextDocument({
-      language: 'json',
-      content,
-    });
-    await vscode.window.showTextDocument(docText);
-  }
+/**
+ * Opens a diagram from private extension storage (workspaceStorage/globalStorage).
+ * Does NOT write into the user's project folder.
+ */
+export async function openDiagramDocument(
+  doc: ErdDocument,
+  storageSave: (doc: ErdDocument) => Promise<vscode.Uri>
+): Promise<vscode.Uri> {
+  const uri = await storageSave(doc);
+  await vscode.commands.executeCommand('vscode.openWith', uri, ErdTextEditorProvider.viewType);
+  return uri;
 }

@@ -9,6 +9,7 @@ import {
 import { layoutSubgraph } from './layout';
 import { parseDocument } from '../editor/ErdTextEditorProvider';
 import { computePageInfo, pageNodes, type PageInfo } from './paging';
+import type { DiagramStorageService } from './DiagramStorageService';
 
 export type { PageInfo };
 export { computePageInfo, pageNodes } from './paging';
@@ -19,10 +20,12 @@ export { computePageInfo, pageNodes } from './paging';
  * (dirty state + undo/redo preserved).
  */
 export class DiagramRealtimeService {
-  async listOpenDiagrams(): Promise<Array<{ uri: string; diagramId: string; name: string; nodes: number }>> {
-    const docs = vscode.workspace.textDocuments.filter((d) => d.fileName.endsWith('.erd.json'));
-    const out = [];
-    for (const d of docs) {
+  constructor(private readonly storage?: DiagramStorageService) {}
+
+  async listOpenDiagrams(): Promise<Array<{ uri: string; diagramId: string; name: string; nodes: number; stored?: boolean }>> {
+    const out: Array<{ uri: string; diagramId: string; name: string; nodes: number; stored?: boolean }> = [];
+    const open = vscode.workspace.textDocuments.filter((d) => d.fileName.endsWith('.erd.json'));
+    for (const d of open) {
       try {
         const erd = parseDocument(d.getText());
         out.push({
@@ -30,9 +33,22 @@ export class DiagramRealtimeService {
           diagramId: erd.diagramId,
           name: erd.name,
           nodes: erd.nodes.length,
+          stored: this.isPrivateStorageUri(d.uri),
         });
       } catch {
         /* skip invalid */
+      }
+    }
+    if (this.storage && !out.length) {
+      const stored = await this.storage.list();
+      for (const s of stored) {
+        out.push({
+          uri: s.uri.toString(),
+          diagramId: s.diagramId,
+          name: s.name,
+          nodes: 0,
+          stored: true,
+        });
       }
     }
     return out;
@@ -42,11 +58,18 @@ export class DiagramRealtimeService {
     const doc = uri
       ? await vscode.workspace.openTextDocument(vscode.Uri.parse(uri))
       : vscode.workspace.textDocuments.find((d) => d.fileName.endsWith('.erd.json')) ??
-        (await findDiagramInWorkspace());
+        (await this.findStoredDiagram());
     if (!doc) {
-      throw new Error('No open .erd.json diagram. Reverse engineer or open a diagram first.');
+      throw new Error('No open diagram. Reverse engineer or open a saved diagram from the sidebar.');
     }
     return { document: doc, erd: parseDocument(doc.getText()) };
+  }
+
+  private isPrivateStorageUri(uri: vscode.Uri): boolean {
+    if (!this.storage) {
+      return false;
+    }
+    return uri.fsPath.startsWith(this.storage.directory.fsPath);
   }
 
   async getDiagram(uri?: string): Promise<ErdDocument> {
@@ -236,12 +259,15 @@ export class DiagramRealtimeService {
     const nodes = erd.nodes.map((n) => map.get(n.tableId) ?? n);
     return this.writeErd(document, { ...erd, nodes });
   }
-}
 
-async function findDiagramInWorkspace(): Promise<vscode.TextDocument | undefined> {
-  const files = await vscode.workspace.findFiles('**/*.erd.json', '**/node_modules/**', 5);
-  if (!files.length) {
-    return undefined;
+  private async findStoredDiagram(): Promise<vscode.TextDocument | undefined> {
+    if (!this.storage) {
+      return undefined;
+    }
+    const list = await this.storage.list();
+    if (!list.length) {
+      return undefined;
+    }
+    return vscode.workspace.openTextDocument(list[0].uri);
   }
-  return vscode.workspace.openTextDocument(files[0]);
 }

@@ -14,6 +14,7 @@ import { SchemaExplorerProvider, type ExplorerNode } from './explorer/SchemaExpl
 import { ErdTextEditorProvider, openDiagramDocument, parseDocument } from './editor/ErdTextEditorProvider';
 import { McpToolHost } from './mcp/McpToolHost';
 import { DiagramRealtimeService } from './diagram/DiagramRealtimeService';
+import { DiagramStorageService } from './diagram/DiagramStorageService';
 import { AgentBridgeServer } from './agent/AgentBridgeServer';
 import { createEmptyDiagram } from '../shared/types';
 
@@ -30,9 +31,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const approvals = new ApprovalStore();
   const mutations = new MutationPipeline(sql, parser, catalog, diff, approvals);
   const reverse = new ReverseEngineerService(catalog);
-  const diagrams = new DiagramRealtimeService();
+  const diagramStorage = new DiagramStorageService(context);
+  const diagrams = new DiagramRealtimeService(diagramStorage);
   const mcp = new McpToolHost(connections, catalog, diff, mutations, approvals, diagrams);
-  const explorer = new SchemaExplorerProvider(connections, catalog);
+  const explorer = new SchemaExplorerProvider(connections, catalog, diagramStorage);
   const bridge = new AgentBridgeServer(mcp);
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -177,7 +179,8 @@ export function activate(context: vscode.ExtensionContext): void {
       schemas = picked;
     }
     const doc = await reverse.reverseEngineer(id, schemas);
-    await openDiagramDocument(doc);
+    await openDiagramDocument(doc, (d) => diagramStorage.save(d));
+    explorer.refresh();
   });
 
   register('erdWorkbench.newDiagram', async () => {
@@ -187,7 +190,60 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const schemas = catalog.getCatalog(id)?.schemas ?? (await catalog.listSchemas(id));
     const doc = createEmptyDiagram(id, schemas, 'New Diagram');
-    await openDiagramDocument(doc);
+    await openDiagramDocument(doc, (d) => diagramStorage.save(d));
+    explorer.refresh();
+  });
+
+  register('erdWorkbench.openStoredDiagram', async (uri?: vscode.Uri) => {
+    const target =
+      uri ??
+      (await (async () => {
+        const list = await diagramStorage.list();
+        if (!list.length) {
+          vscode.window.showInformationMessage('No saved diagrams in private extension storage.');
+          return undefined;
+        }
+        const picked = await vscode.window.showQuickPick(
+          list.map((d) => ({ label: d.name, description: d.updatedAt, uri: d.uri })),
+          { title: 'Open saved diagram' }
+        );
+        return picked?.uri;
+      })());
+    if (!target) {
+      return;
+    }
+    await vscode.commands.executeCommand('vscode.openWith', target, ErdTextEditorProvider.viewType);
+  });
+
+  register('erdWorkbench.deleteStoredDiagram', async (node?: ExplorerNode) => {
+    const ref = node?.meta as { uri?: vscode.Uri; name?: string } | undefined;
+    const uri = ref?.uri;
+    if (!uri) {
+      return;
+    }
+    const ok = await vscode.window.showWarningMessage(
+      `Delete saved diagram "${ref?.name ?? uri.fsPath}" from private storage?`,
+      { modal: true },
+      'Delete'
+    );
+    if (ok !== 'Delete') {
+      return;
+    }
+    await diagramStorage.delete(uri);
+    explorer.refresh();
+  });
+
+  register('erdWorkbench.exportDiagramToWorkspace', async () => {
+    const open = vscode.workspace.textDocuments.find((d) => d.fileName.endsWith('.erd.json'));
+    if (!open) {
+      vscode.window.showErrorMessage('Open a diagram first.');
+      return;
+    }
+    const erd = parseDocument(open.getText());
+    const target = await diagramStorage.exportToWorkspace(erd);
+    if (target) {
+      vscode.window.showInformationMessage(`Exported to ${target.fsPath}`);
+    }
   });
 
   register('erdWorkbench.executeSql', async () => {
