@@ -4,6 +4,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  MarkerType,
   SelectionMode,
   useEdgesState,
   useNodesState,
@@ -22,11 +23,35 @@ import type {
   ErdDocument,
   HostToWebviewMessage,
 } from '../../shared/types';
+import { routeEdges } from '../../shared/routing';
+import {
+  applyInferredAcceptVisual,
+  applyInferredReject,
+  countVisibleInferred,
+} from '../../shared/inferredActions';
+import {
+  autoGroupBySchema,
+  collapsedGroupDisplay,
+  computeGroupBounds,
+  createGroup,
+  dissolveGroup,
+  groupMembers,
+  groupNodeId,
+  isHiddenByCollapsedGroup,
+  layoutSwimlanes,
+  moveCollapsedGroup,
+  parseGroupNodeId,
+  remapEdgeForCollapse,
+  renameGroup,
+  setAllGroupsCollapsed,
+  toggleGroupCollapsed,
+} from '../../shared/groups';
 import { post } from './vscodeApi';
 import { TableNode, type LodLevel, type TableNodeData } from './nodes/TableNode';
-import { OrthogonalEdge } from './edges/OrthogonalEdge';
+import { GroupNode, type GroupNodeData } from './nodes/GroupNode';
+import { OrthogonalEdge, type InferredEdgeAction } from './edges/OrthogonalEdge';
 
-const nodeTypes = { tableNode: TableNode };
+const nodeTypes = { tableNode: TableNode, groupNode: GroupNode };
 const edgeTypes = { orthogonal: OrthogonalEdge };
 
 const VIEWPORT_MARGIN = 280;
@@ -53,6 +78,12 @@ export function App() {
   const hydrateRequested = useRef<Set<string>>(new Set());
   const rfRef = useRef<ReactFlowInstance | null>(null);
   const autoPagedRef = useRef(false);
+  const inferredActionRef = useRef<(edgeId: string, action: InferredEdgeAction) => void>(() => {});
+  const groupActionRef = useRef<{
+    toggle: (groupId: string) => void;
+    rename: (groupId: string) => void;
+    dissolve: (groupId: string) => void;
+  }>({ toggle: () => {}, rename: () => {}, dissolve: () => {} });
 
   const fitCanvas = useCallback((padding = 0.14) => {
     requestAnimationFrame(() => {
@@ -120,9 +151,28 @@ export function App() {
                 columnCount: msg.columns.length,
               }),
               columns: msg.columns,
+              columnCount: msg.columns.length,
+              fkCount: msg.foreignKeys.length,
               pkCols: msg.columns.filter((c) => c.columnKey === 'PRI').map((c) => c.name),
             },
           }));
+          break;
+        }
+        case 'catalogPatch': {
+          setCatalog((prev) => {
+            const removed = new Set(msg.patch.tablesRemoved);
+            const changed = new Map(msg.patch.tablesChanged.map((t) => [t.id, t]));
+            const next = prev
+              .filter((t) => !removed.has(t.id))
+              .map((t) => changed.get(t.id) ?? t);
+            const existing = new Set(next.map((t) => t.id));
+            for (const t of msg.patch.tablesAdded) {
+              if (!existing.has(t.id)) {
+                next.push(t);
+              }
+            }
+            return next;
+          });
           break;
         }
         case 'error':
@@ -242,7 +292,10 @@ export function App() {
     const worldRight = worldLeft + viewport.width / zoom + VIEWPORT_MARGIN * 2;
     const worldBottom = worldTop + viewport.height / zoom + VIEWPORT_MARGIN * 2;
 
-    const candidates = document.nodes.filter((n) => filteredTableIds.has(n.tableId));
+    // Tables whose swimlane is collapsed are represented by a group proxy card
+    const candidates = document.nodes.filter(
+      (n) => filteredTableIds.has(n.tableId) && !isHiddenByCollapsedGroup(document, n.tableId)
+    );
     const inView = candidates.filter((n) => {
       const w = n.width ?? 220;
       const h = n.height ?? 120;
@@ -270,6 +323,7 @@ export function App() {
       const hyd = hydrated[n.tableId];
       const pkCols = hyd?.pkCols ?? summary?.pkCols ?? [];
       const data: TableNodeData = {
+        tableId: n.tableId,
         schema: summary?.schema ?? n.tableId.split('.')[0],
         name: summary?.name ?? n.tableId.split('.').slice(1).join('.'),
         kind: summary?.kind ?? 'table',
@@ -286,10 +340,82 @@ export function App() {
         position: { x: n.x, y: n.y },
         data,
         selected: false,
+        zIndex: 2,
       };
     });
 
-    const rfEdges: Edge[] = document.edges
+    // Swimlane frames (expanded) + collapsed proxy cards
+    const relevantGroups = document.groups.filter((g) => {
+      const members = groupMembers(document, g.id);
+      return members.some((m) => filteredTableIds.has(m.tableId));
+    });
+
+    for (const g of relevantGroups) {
+      const members = groupMembers(document, g.id);
+      const memberCount = members.length;
+      if (g.collapsed) {
+        const display = collapsedGroupDisplay(g, memberCount);
+        const data: GroupNodeData = {
+          groupId: g.id,
+          name: g.name,
+          color: g.color ?? '#3d5a80',
+          memberCount,
+          collapsed: true,
+          width: display.width,
+          height: display.height,
+          onToggle: (id) => groupActionRef.current.toggle(id),
+          onRename: (id) => groupActionRef.current.rename(id),
+          onDissolve: (id) => groupActionRef.current.dissolve(id),
+        };
+        rfNodes.push({
+          id: groupNodeId(g.id),
+          type: 'groupNode',
+          position: { x: display.x, y: display.y },
+          data,
+          selectable: true,
+          draggable: true,
+          connectable: false,
+          zIndex: 3,
+        });
+        mountIds.add(groupNodeId(g.id));
+      } else {
+        // Only draw frame when at least one member is mounted (or any member in filter)
+        const mountedMembers = members.filter((m) => mountIds.has(m.tableId));
+        if (!mountedMembers.length && !members.some((m) => filteredTableIds.has(m.tableId))) {
+          continue;
+        }
+        const bounds =
+          computeGroupBounds(mountedMembers.length ? mountedMembers : members) ??
+          computeGroupBounds(members);
+        if (!bounds) {
+          continue;
+        }
+        const data: GroupNodeData = {
+          groupId: g.id,
+          name: g.name,
+          color: g.color ?? '#3d5a80',
+          memberCount,
+          collapsed: false,
+          width: bounds.width,
+          height: bounds.height,
+          onToggle: (id) => groupActionRef.current.toggle(id),
+          onRename: (id) => groupActionRef.current.rename(id),
+          onDissolve: (id) => groupActionRef.current.dissolve(id),
+        };
+        rfNodes.unshift({
+          id: groupNodeId(g.id),
+          type: 'groupNode',
+          position: { x: bounds.x, y: bounds.y },
+          data,
+          selectable: false,
+          draggable: false,
+          connectable: false,
+          zIndex: 0,
+        });
+      }
+    }
+
+    const remapped = document.edges
       .filter((e) => {
         if (e.hidden) {
           return false;
@@ -297,27 +423,95 @@ export function App() {
         if (e.relationshipKind === 'inferred' && !showInferred) {
           return false;
         }
-        return mountIds.has(e.sourceTableId) && mountIds.has(e.targetTableId);
+        return true;
       })
-      .map((e) => ({
+      .map((e) => {
+        const mapped = remapEdgeForCollapse(document, e);
+        return { edge: e, ...mapped };
+      })
+      .filter((m) => !m.hide && mountIds.has(m.sourceId) && mountIds.has(m.targetId));
+
+    const routeNodes = [
+      ...mount.map((n) => ({
+        id: n.tableId,
+        x: n.x,
+        y: n.y,
+        width: n.width ?? 220,
+        height: n.height ?? 120,
+      })),
+      ...relevantGroups
+        .filter((g) => g.collapsed)
+        .map((g) => {
+          const display = collapsedGroupDisplay(g, groupMembers(document, g.id).length);
+          return {
+            id: groupNodeId(g.id),
+            x: display.x,
+            y: display.y,
+            width: display.width,
+            height: display.height,
+          };
+        }),
+    ];
+
+    const routed = routeEdges(
+      routeNodes,
+      remapped.map((m) => ({
+        id: m.edge.id,
+        sourceId: m.sourceId,
+        targetId: m.targetId,
+      }))
+    );
+    const routeById = new Map(routed.map((r) => [r.id, r]));
+
+    const rfEdges: Edge[] = remapped.map((m) => {
+      const e = m.edge;
+      const route = routeById.get(e.id);
+      const isInferred = e.relationshipKind === 'inferred';
+      return {
         id: e.id,
-        source: e.sourceTableId,
-        target: e.targetTableId,
-        sourceHandle: 's-right',
-        targetHandle: 't-left',
+        source: m.sourceId,
+        target: m.targetId,
+        sourceHandle: route?.sourceHandle ?? 's-right',
+        targetHandle: route?.targetHandle ?? 't-left',
         type: 'orthogonal',
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 14,
+          height: 14,
+          color: isInferred
+            ? '#c586c0'
+            : e.relationshipKind === 'visual'
+              ? '#8aa4c8'
+              : '#6fbf95',
+        },
         data: {
           relationshipKind: e.relationshipKind,
           label: e.label,
           cardinality: e.cardinality,
+          sourceSide: route?.sourceSide,
+          targetSide: route?.targetSide,
+          sourcePortOffset: route?.sourcePortOffset ?? 0,
+          targetPortOffset: route?.targetPortOffset ?? 0,
+          bundleLane: route?.bundleLane ?? 0,
+          bundleOffset: route?.bundleOffset ?? 0,
+          ...(isInferred
+            ? {
+                onInferredAction: (action: InferredEdgeAction) =>
+                  inferredActionRef.current(e.id, action),
+              }
+            : {}),
         },
         selectable: true,
-      }));
+      };
+    });
 
     setNodes(rfNodes);
     setEdges(rfEdges);
+    const groupNote = document.groups.length
+      ? ` · ${document.groups.filter((g) => g.collapsed).length}/${document.groups.length} groups collapsed`
+      : '';
     setStatus(
-      `${rfNodes.length} on canvas · ${filteredTableIds.size} filtered · ${document.nodes.length} total`
+      `${mount.length} tables · ${filteredTableIds.size} filtered · ${document.nodes.length} total${groupNote}`
     );
 
     // Auto-hydrate columns for visible tables (don't wait for hover)
@@ -355,13 +549,29 @@ export function App() {
       if (!posChanges.length) {
         return;
       }
-      const map = new Map(posChanges.map((c) => [c.id, c.position]));
-      const nodes = doc.nodes.map((n) => {
-        const p = map.get(n.tableId);
-        return p ? { ...n, x: p.x, y: p.y } : n;
-      });
+
+      let next = doc;
+      const tablePos = new Map<string, { x: number; y: number }>();
+      for (const c of posChanges) {
+        const gid = parseGroupNodeId(c.id);
+        if (gid) {
+          next = moveCollapsedGroup(next, gid, c.position.x, c.position.y);
+        } else {
+          tablePos.set(c.id, c.position);
+        }
+      }
+      if (tablePos.size) {
+        next = {
+          ...next,
+          nodes: next.nodes.map((n) => {
+            const p = tablePos.get(n.tableId);
+            return p ? { ...n, x: p.x, y: p.y } : n;
+          }),
+          updatedAt: new Date().toISOString(),
+        };
+      }
+
       const dragging = changes.some((c) => c.type === 'position' && (c as { dragging?: boolean }).dragging);
-      const next = { ...doc, nodes, updatedAt: new Date().toISOString() };
       docRef.current = next;
       if (!dragging) {
         scheduleSave(next);
@@ -409,44 +619,125 @@ export function App() {
     if (!connection.source || !connection.target) {
       return;
     }
-    // Default: visual-only. Physical is an explicit second confirm.
-    const visual = window.confirm(
-      'Create a VISUAL-ONLY relationship?\n\nOK = visual (no database change)\nCancel = choose physical or abort'
-    );
-    if (visual) {
-      post({
-        type: 'createRelationship',
-        mode: 'visual',
-        edge: {
-          sourceTableId: connection.source,
-          targetTableId: connection.target,
-          sourceColumns: [],
-          targetColumns: [],
-          cardinality: '1:N',
-          relationshipKind: 'visual',
-        },
-      });
+    if (connection.source === connection.target) {
+      setStatus('Cannot connect a table to itself');
       return;
     }
-    const physical = window.confirm(
-      'Create a PHYSICAL foreign key instead?\n\nOK = SQL preview + VS Code confirmation\nCancel = abort (no changes)'
-    );
-    if (!physical) {
-      return;
-    }
+    // Host RelationshipWizard: pick mode, cardinality, FK columns (physical → SQL preview)
     post({
       type: 'createRelationship',
-      mode: 'physical',
-      edge: {
-        sourceTableId: connection.source,
-        targetTableId: connection.target,
-        sourceColumns: ['id'],
-        targetColumns: ['id'],
-        cardinality: '1:N',
-        relationshipKind: 'physical',
-      },
+      sourceTableId: connection.source,
+      targetTableId: connection.target,
     });
+    setStatus(`Relationship wizard: ${connection.source} → ${connection.target}`);
   }, []);
+
+  /** Canvas Accept / Promote / Reject on inferred edges → host proposeInferredAction */
+  inferredActionRef.current = (edgeId, action) => {
+    const doc = docRef.current;
+    if (!doc) {
+      return;
+    }
+    // Optimistic local update for accept/reject; promote waits on host wizard + DDL
+    if (action === 'accept-visual') {
+      const next = applyInferredAcceptVisual(doc, edgeId);
+      docRef.current = next;
+      setDocument(next);
+      setStatus(`Accepted inferred as visual · ${edgeId}`);
+    } else if (action === 'reject') {
+      const next = applyInferredReject(doc, edgeId);
+      docRef.current = next;
+      setDocument(next);
+      setStatus(`Dismissed inferred suggestion · ${edgeId}`);
+    } else {
+      setStatus(`Promote inferred → physical… · ${edgeId}`);
+    }
+    post({ type: 'proposeInferredAction', edgeId, action });
+  };
+
+  groupActionRef.current = {
+    toggle: (groupId) => {
+      const doc = docRef.current;
+      if (!doc) {
+        return;
+      }
+      scheduleSave(toggleGroupCollapsed(doc, groupId));
+    },
+    rename: (groupId) => {
+      const doc = docRef.current;
+      if (!doc) {
+        return;
+      }
+      const current = doc.groups.find((g) => g.id === groupId);
+      const name = window.prompt('Group name', current?.name ?? 'Group');
+      if (name === null) {
+        return;
+      }
+      scheduleSave(renameGroup(doc, groupId, name));
+    },
+    dissolve: (groupId) => {
+      const doc = docRef.current;
+      if (!doc) {
+        return;
+      }
+      const current = doc.groups.find((g) => g.id === groupId);
+      if (!window.confirm(`Dissolve group “${current?.name ?? groupId}”? Tables stay on the canvas.`)) {
+        return;
+      }
+      scheduleSave(dissolveGroup(doc, groupId));
+    },
+  };
+
+  const inferredCount = document ? countVisibleInferred(document) : 0;
+
+  const groupSelectedTables = () => {
+    const doc = docRef.current;
+    if (!doc) {
+      return;
+    }
+    const selected = nodes.filter((n) => n.selected && n.type === 'tableNode').map((n) => n.id);
+    if (selected.length < 1) {
+      setStatus('Select one or more tables to group');
+      return;
+    }
+    const name = window.prompt('Group / swimlane name', 'Group');
+    if (name === null) {
+      return;
+    }
+    scheduleSave(createGroup(doc, name, selected));
+    setStatus(`Grouped ${selected.length} table(s)`);
+  };
+
+  const runAutoGroupBySchema = () => {
+    const doc = docRef.current;
+    if (!doc) {
+      return;
+    }
+    scheduleSave(autoGroupBySchema(doc));
+    setStatus('Grouped tables by schema');
+  };
+
+  const runLayoutSwimlanes = () => {
+    const doc = docRef.current;
+    if (!doc) {
+      return;
+    }
+    if (!doc.groups.length) {
+      setStatus('Create groups first (selection or By schema)');
+      return;
+    }
+    scheduleSave(layoutSwimlanes(doc));
+    fitCanvas(0.1);
+    setStatus('Arranged swimlanes');
+  };
+
+  const collapseOrExpandAll = (collapsed: boolean) => {
+    const doc = docRef.current;
+    if (!doc?.groups.length) {
+      return;
+    }
+    scheduleSave(setAllGroupsCollapsed(doc, collapsed));
+  };
 
   const persistFilters = (patch: Partial<ErdDocument['filters']>) => {
     const doc = docRef.current;
@@ -497,7 +788,14 @@ export function App() {
             />
             Linked only
           </label>
-          <label className={`chip ${showInferred ? 'is-on' : ''}`}>
+          <label
+            className={`chip ${showInferred ? 'is-on' : ''}`}
+            title={
+              inferredCount
+                ? `${inferredCount} inferred suggestion(s) — Accept / Promote / Reject on each edge`
+                : 'Show inferred (non-FK) relationship suggestions'
+            }
+          >
             <input
               type="checkbox"
               checked={showInferred}
@@ -506,7 +804,7 @@ export function App() {
                 persistFilters({ showInferred: e.target.checked });
               }}
             />
-            Inferred
+            Inferred{inferredCount ? ` (${inferredCount})` : ''}
           </label>
           <label className={`chip ${showViews ? 'is-on' : ''}`}>
             <input
@@ -583,6 +881,34 @@ export function App() {
           </div>
         )}
 
+        <div className="erd-toolbar__group" role="group" aria-label="Groups">
+          <button type="button" onClick={groupSelectedTables} title="Group selected tables into a swimlane">
+            Group
+          </button>
+          <button type="button" onClick={runAutoGroupBySchema} title="Create one swimlane per schema">
+            By schema
+          </button>
+          <button type="button" onClick={runLayoutSwimlanes} title="Stack groups as horizontal swimlanes">
+            Swimlanes
+          </button>
+          <button
+            type="button"
+            onClick={() => collapseOrExpandAll(true)}
+            disabled={!document.groups.length}
+            title="Collapse all groups"
+          >
+            Collapse
+          </button>
+          <button
+            type="button"
+            onClick={() => collapseOrExpandAll(false)}
+            disabled={!document.groups.length}
+            title="Expand all groups"
+          >
+            Expand
+          </button>
+        </div>
+
         <button type="button" className="primary" onClick={autoLayout} title="Layout current page only">
           Auto-layout
         </button>
@@ -593,10 +919,17 @@ export function App() {
           Fit screen
         </button>
 
-        <span className="erd-toolbar__meta">
+        <span
+          className="erd-toolbar__meta"
+          title={
+            pageInfo.pageMode
+              ? `Page ${pageInfo.pageIndex + 1} of ${pageInfo.pageCount} · ${filteredTableIds.size} of ${pageInfo.total} tables`
+              : `Zoom detail level: ${lod}`
+          }
+        >
           {pageInfo.pageMode
             ? `${filteredTableIds.size}/${pageInfo.total} · p${pageInfo.pageIndex + 1}`
-            : `detail: ${lod}`}
+            : `LOD ${lod}`}
         </span>
       </div>
 
@@ -652,7 +985,7 @@ export function App() {
       </div>
 
       <div className="erd-footer">
-        <div>
+        <div className="erd-footer__stats" title={status}>
           <strong>
             {filteredTableIds.size} on screen
           </strong>
@@ -660,10 +993,17 @@ export function App() {
           {pageInfo.pageMode
             ? ` · page ${pageInfo.pageIndex + 1}/${pageInfo.pageCount}`
             : ''}
-          {pageInfo.forcePages ? ' · pages auto-enabled' : ''}
+          {pageInfo.forcePages ? ' · pages auto' : ''}
         </div>
-        <div className="erd-footer__hint">
-          Use Pages ‹ › for large schemas · Fit screen · Auto-layout applies to current page only
+        <div
+          className="erd-footer__hint"
+          title="Groups: select tables → Group · By schema · Swimlanes · ▾/▸ collapse · Inferred ✓/↑/✕"
+        >
+          {document.groups.length
+            ? `Groups ${document.groups.length} · Swimlanes · ▾ collapse`
+            : showInferred && inferredCount
+              ? `Inferred: ✓ Visual · ↑ Physical · ✕ · ${inferredCount} open`
+              : 'Group · By schema · Edit ✎ · Fit'}
         </div>
       </div>
     </div>

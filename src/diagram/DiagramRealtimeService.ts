@@ -2,10 +2,16 @@ import * as vscode from 'vscode';
 import {
   ERD_FORMAT_VERSION,
   type DiagramFilters,
-  type DiagramGroup,
   type DiagramNodeLayout,
   type ErdDocument,
 } from '../../shared/types';
+import {
+  autoGroupBySchema,
+  createGroup,
+  dissolveGroup,
+  layoutSwimlanes,
+  toggleGroupCollapsed,
+} from '../../shared/groups';
 import { layoutSubgraph } from './layout';
 import { parseDocument } from '../editor/ErdTextEditorProvider';
 import { computePageInfo, pageNodes, type PageInfo } from './paging';
@@ -166,18 +172,27 @@ export class DiagramRealtimeService {
     uri?: string
   ): Promise<ErdDocument> {
     const { document, erd } = await this.getActiveOrUri(uri);
-    const group: DiagramGroup = {
-      id: `grp_${Date.now().toString(36)}`,
-      name,
-      collapsed: false,
-    };
-    const idSet = new Set(tableIds);
-    const nodes = erd.nodes.map((n) => (idSet.has(n.tableId) ? { ...n, groupId: group.id } : n));
-    return this.writeErd(document, {
-      ...erd,
-      groups: [...erd.groups, group],
-      nodes,
-    });
+    return this.writeErd(document, createGroup(erd, name, tableIds));
+  }
+
+  async toggleGroup(groupId: string, uri?: string): Promise<ErdDocument> {
+    const { document, erd } = await this.getActiveOrUri(uri);
+    return this.writeErd(document, toggleGroupCollapsed(erd, groupId));
+  }
+
+  async dissolveGroup(groupId: string, uri?: string): Promise<ErdDocument> {
+    const { document, erd } = await this.getActiveOrUri(uri);
+    return this.writeErd(document, dissolveGroup(erd, groupId));
+  }
+
+  async autoGroupBySchema(uri?: string): Promise<ErdDocument> {
+    const { document, erd } = await this.getActiveOrUri(uri);
+    return this.writeErd(document, autoGroupBySchema(erd));
+  }
+
+  async layoutSwimlanes(uri?: string): Promise<ErdDocument> {
+    const { document, erd } = await this.getActiveOrUri(uri);
+    return this.writeErd(document, layoutSwimlanes(erd));
   }
 
   async setViewport(viewport: { x: number; y: number; zoom: number }, uri?: string): Promise<ErdDocument> {

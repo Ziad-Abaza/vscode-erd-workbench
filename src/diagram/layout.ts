@@ -23,7 +23,12 @@ export async function layoutSubgraph(
       'elk.algorithm': 'layered',
       'elk.direction': options?.direction ?? 'RIGHT',
       'elk.spacing.nodeNode': '80',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '100',
+      'elk.spacing.edgeNode': '40',
+      'elk.spacing.edgeEdge': '24',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '120',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '40',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
       'elk.edgeRouting': 'ORTHOGONAL',
     },
     children: movable.map((n) => ({

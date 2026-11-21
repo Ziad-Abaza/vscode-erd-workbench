@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import type { QueryResult, SqlResultsHostMessage, SqlRunSnapshot } from '../../shared/types';
 import { post } from './vscodeApi';
 
-export function App(): JSX.Element {
+export function App(): ReactElement {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [run, setRun] = useState<SqlRunSnapshot | undefined>();
   const [progress, setProgress] = useState<string | undefined>();
@@ -54,13 +54,8 @@ export function App(): JSX.Element {
 
   const results = run?.results ?? [];
   const active: QueryResult | undefined = results[activeIndex];
-
-  const statusLabel = useMemo(() => {
-    if (!run) {
-      return 'idle';
-    }
-    return run.status;
-  }, [run]);
+  const statusLabel = useMemo(() => (run ? run.status : 'idle'), [run]);
+  const canCopy = Boolean(active && active.columns.length > 0);
 
   return (
     <div className="app">
@@ -96,7 +91,7 @@ export function App(): JSX.Element {
           <button
             type="button"
             className="primary"
-            disabled={!active || active.columns.length === 0}
+            disabled={!canCopy}
             onClick={() => post({ type: 'copyTsv', resultIndex: activeIndex })}
           >
             Copy TSV
@@ -110,40 +105,18 @@ export function App(): JSX.Element {
             <button
               key={`${i}-${r.statementSql ?? ''}`}
               type="button"
-              className={`tab ${i === activeIndex ? 'active' : ''}`}
+              className={i === activeIndex ? 'tab active' : 'tab'}
               onClick={() => setActiveIndex(i)}
             >
-              Result {i + 1}
-              {r.columns.length ? ` (${r.rows.length})` : r.affectedRows !== undefined ? ` (${r.affectedRows})` : ''}
+              {tabLabel(r, i)}
             </button>
           ))}
         </nav>
       ) : null}
 
-      <main className="body">{
-        {!run ? (
-          <div className="message">No query run yet. Use Execute SQL on a .sql editor.</div>
-        ) : run.status === 'error' ? (
-          <div className="message error">{run.error ?? 'Query failed'}</div>
-        ) : run.status === 'cancelled' ? (
-          <div className="message">{run.error ?? 'Query cancelled'}</div>
-        ) : run.status === 'running' && !active ? (
-          <div className="message">{progress ?? 'Running…'}</div>
-        ) : active && active.columns.length === 0 ? (
-          <div className="affected">
-            {active.affectedRows !== undefined
-              ? `OK · ${active.affectedRows} row(s) affected`
-              : 'OK · statement completed'}
-            {active.durationMs !== undefined ? ` · ${formatMs(active.durationMs)}` : ''}
-          </div>
-        ) : active ? (
-          <ResultGrid result={active} />
-        ) : (
-          <div className="message">No result set</div>
-        )}
-      </main>
+      <main className="body">{renderBody(run, active, progress)}</main>
 
-      {active && active.columns.length > 0 ? (
+      {canCopy && active ? (
         <footer className="footer">
           <span>
             {active.rows.length} row{active.rows.length === 1 ? '' : 's'}
@@ -158,7 +131,53 @@ export function App(): JSX.Element {
   );
 }
 
-function ResultGrid({ result }: { result: QueryResult }): JSX.Element {
+function tabLabel(result: QueryResult, index: number): string {
+  if (result.columns.length) {
+    return `Result ${index + 1} (${result.rows.length})`;
+  }
+  if (result.affectedRows !== undefined) {
+    return `Result ${index + 1} (${result.affectedRows})`;
+  }
+  return `Result ${index + 1}`;
+}
+
+function renderBody(
+  run: SqlRunSnapshot | undefined,
+  active: QueryResult | undefined,
+  progress: string | undefined
+): ReactElement {
+  if (!run) {
+    return <div className="message">No query run yet. Use Execute SQL on a .sql editor.</div>;
+  }
+  if (run.status === 'error') {
+    return <div className="message error">{run.error ?? 'Query failed'}</div>;
+  }
+  if (run.status === 'cancelled') {
+    return <div className="message">{run.error ?? 'Query cancelled'}</div>;
+  }
+  if (run.status === 'running' && !active) {
+    return <div className="message">{progress ?? 'Running…'}</div>;
+  }
+  if (active && active.columns.length === 0) {
+    const summary =
+      active.affectedRows !== undefined
+        ? `OK · ${active.affectedRows} row(s) affected`
+        : 'OK · statement completed';
+    const timing = active.durationMs !== undefined ? ` · ${formatMs(active.durationMs)}` : '';
+    return (
+      <div className="affected">
+        {summary}
+        {timing}
+      </div>
+    );
+  }
+  if (active) {
+    return <ResultGrid result={active} />;
+  }
+  return <div className="message">No result set</div>;
+}
+
+function ResultGrid({ result }: { result: QueryResult }): ReactElement {
   return (
     <div className="grid-wrap">
       <table className="results">

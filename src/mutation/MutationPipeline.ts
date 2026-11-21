@@ -1,10 +1,23 @@
 import * as vscode from 'vscode';
-import type { MutationPlan, SchemaDiff, SqlRiskClass } from '../../shared/types';
+import type { MutationPlan, SchemaDiff, SchemaDiffItem, SqlRiskClass } from '../../shared/types';
 import { SchemaDiffService } from '../schema/SchemaDiffService';
 import { SchemaCatalogService } from '../schema/SchemaCatalogService';
 import { SqlExecutionService } from '../sql/execution/SqlExecutionService';
 import { SqlParserService } from '../sql/parser/SqlParserService';
 import { ApprovalStore, contentHashForPlan } from './ApprovalStore';
+import {
+  buildAddColumnSql,
+  buildDropColumnSql,
+  buildModifyColumnSql,
+  type AlterColumnInput,
+  type ColumnDefinitionInput,
+} from './columnDdl';
+import {
+  buildNmJunctionSql as nmJunctionSql,
+  buildPhysicalFkSql as physicalFkSql,
+  type NmJunctionInput,
+  type PhysicalFkInput,
+} from './relationshipDdl';
 
 export class MutationPipeline {
   private readonly proposals = new Map<string, MutationPlan>();
@@ -27,6 +40,7 @@ export class MutationPipeline {
     intent: string;
     sql: string;
     expectedDiff?: SchemaDiff;
+    expectedDiffItems?: SchemaDiffItem[];
   }): MutationPlan {
     const classified = this.parser.splitAndClassify(input.sql);
     if (!classified.ok) {
@@ -43,6 +57,12 @@ export class MutationPipeline {
       throw new Error('MutationPipeline is for write/destructive plans only');
     }
 
+    const expectedDiff: SchemaDiff = input.expectedDiff ?? {
+      connectionId: input.connectionId,
+      comparedAt: new Date().toISOString(),
+      items: input.expectedDiffItems ?? [],
+    };
+
     const plan: MutationPlan = {
       proposalId: `prop_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       connectionId: input.connectionId,
@@ -50,11 +70,7 @@ export class MutationPipeline {
       intent: input.intent,
       sql: classified.statements.map((s) => s.sql).join(';\n') + ';',
       risk,
-      expectedDiff: input.expectedDiff ?? {
-        connectionId: input.connectionId,
-        comparedAt: new Date().toISOString(),
-        items: [],
-      },
+      expectedDiff,
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
     };
@@ -66,10 +82,19 @@ export class MutationPipeline {
    * Host UI confirmation → issues approval token bound to exact SQL.
    */
   async confirmWithUser(plan: MutationPlan): Promise<string | undefined> {
+    const diffSummary =
+      plan.expectedDiff.items.length > 0
+        ? [
+            '',
+            'Expected changes:',
+            ...plan.expectedDiff.items.map((i) => `  • ${i.summary}`),
+          ]
+        : [];
     const detail = [
       plan.title,
       `Risk: ${plan.risk}`,
       `Intent: ${plan.intent}`,
+      ...diffSummary,
       '',
       plan.sql.slice(0, 3000),
     ].join('\n');
@@ -114,6 +139,7 @@ export class MutationPipeline {
     title: string;
     intent: string;
     sql: string;
+    expectedDiffItems?: SchemaDiffItem[];
   }): Promise<boolean> {
     const plan = this.propose(input);
     const token = await this.confirmWithUser(plan);
@@ -131,50 +157,23 @@ export class MutationPipeline {
     return true;
   }
 
-  buildPhysicalFkSql(input: {
-    schema: string;
-    table: string;
-    constraintName: string;
-    columns: string[];
-    refSchema: string;
-    refTable: string;
-    refColumns: string[];
-  }): string {
-    const cols = input.columns.map(q).join(', ');
-    const refs = input.refColumns.map(q).join(', ');
-    return `ALTER TABLE ${q(input.schema)}.${q(input.table)}
-  ADD CONSTRAINT ${q(input.constraintName)}
-  FOREIGN KEY (${cols}) REFERENCES ${q(input.refSchema)}.${q(input.refTable)} (${refs});`;
+  buildAddColumnSql(schema: string, table: string, col: ColumnDefinitionInput): string {
+    return buildAddColumnSql(schema, table, col);
   }
 
-  buildNmJunctionSql(input: {
-    schema: string;
-    leftTable: string;
-    rightTable: string;
-    leftCols: string[];
-    rightCols: string[];
-    leftRefCols: string[];
-    rightRefCols: string[];
-    junctionName?: string;
-  }): string {
-    const jName =
-      input.junctionName ??
-      `${input.leftTable}_${input.rightTable}`;
-    const leftFk = input.leftCols.map((c, i) => `${q(c)} INT NOT NULL`).join(',\n  ');
-    // Simplified generation — production path should use referenced column types from catalog
-    const rightFk = input.rightCols.map((c) => `${q(c)} INT NOT NULL`).join(',\n  ');
-    return `CREATE TABLE ${q(input.schema)}.${q(jName)} (
-  ${leftFk},
-  ${rightFk},
-  PRIMARY KEY (${input.leftCols.concat(input.rightCols).map(q).join(', ')}),
-  CONSTRAINT ${q(`fk_${jName}_${input.leftTable}`)} FOREIGN KEY (${input.leftCols.map(q).join(', ')})
-    REFERENCES ${q(input.schema)}.${q(input.leftTable)} (${input.leftRefCols.map(q).join(', ')}),
-  CONSTRAINT ${q(`fk_${jName}_${input.rightTable}`)} FOREIGN KEY (${input.rightCols.map(q).join(', ')})
-    REFERENCES ${q(input.schema)}.${q(input.rightTable)} (${input.rightRefCols.map(q).join(', ')})
-);`;
+  buildModifyColumnSql(schema: string, table: string, col: AlterColumnInput): string {
+    return buildModifyColumnSql(schema, table, col);
   }
-}
 
-function q(ident: string): string {
-  return `\`${ident.replace(/`/g, '``')}\``;
+  buildDropColumnSql(schema: string, table: string, columnName: string): string {
+    return buildDropColumnSql(schema, table, columnName);
+  }
+
+  buildPhysicalFkSql(input: PhysicalFkInput): string {
+    return physicalFkSql(input);
+  }
+
+  buildNmJunctionSql(input: NmJunctionInput): string {
+    return nmJunctionSql(input);
+  }
 }

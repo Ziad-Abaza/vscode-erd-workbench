@@ -8,6 +8,14 @@ import {
 } from '../../shared/types';
 import { SchemaCatalogService } from '../schema/SchemaCatalogService';
 import { MutationPipeline } from '../mutation/MutationPipeline';
+import { runTableEditWizard } from '../mutation/TableEditWizard';
+import { runPromoteInferredWizard, runRelationshipWizard } from '../mutation/RelationshipWizard';
+import {
+  applyInferredAcceptVisual,
+  applyInferredReject,
+  findInferredEdge,
+  formatInferredMapping,
+} from '../../shared/inferredActions';
 import { layoutSubgraph } from '../diagram/layout';
 import { pageNodes as currentPageNodes } from '../diagram/paging';
 
@@ -140,107 +148,269 @@ export class ErdTextEditorProvider implements vscode.CustomTextEditorProvider {
       }
       case 'createRelationship': {
         const doc = parseDocument(document.getText());
-        if (msg.mode === 'visual') {
-          const edge = {
-            ...msg.edge,
-            id: `visual:${Date.now().toString(36)}`,
-            relationshipKind: 'visual' as const,
-          };
-          const next = {
-            ...doc,
-            edges: [...doc.edges, edge],
-            updatedAt: new Date().toISOString(),
-          };
-          await this.writeDocument(document, next);
+        if (!doc.connectionId) {
+          throw new Error('Diagram has no connectionId — reconnect / reverse-engineer first');
+        }
+        await this.ensureTablesHydrated(doc.connectionId, [
+          msg.sourceTableId,
+          msg.targetTableId,
+        ]);
+        const sourceTable = this.catalog.getTable(doc.connectionId, msg.sourceTableId);
+        const targetTable = this.catalog.getTable(doc.connectionId, msg.targetTableId);
+        if (!sourceTable || !targetTable) {
+          throw new Error(
+            `Tables not in catalog: ${[!sourceTable && msg.sourceTableId, !targetTable && msg.targetTableId]
+              .filter(Boolean)
+              .join(', ')}`
+          );
+        }
+
+        const result = await runRelationshipWizard({
+          connectionId: doc.connectionId,
+          sourceTable,
+          targetTable,
+          mutations: this.mutations,
+        });
+
+        if (!result.applied || !result.edge) {
           break;
         }
-        // Physical — never automatic; MutationPipeline preview + confirm
-        const [srcSchema, srcTable] = msg.edge.sourceTableId.split('.');
-        const [refSchema, refTable] = msg.edge.targetTableId.split('.');
-        if (msg.edge.cardinality === 'N:M') {
-          const sql = this.mutations.buildNmJunctionSql({
-            schema: srcSchema,
-            leftTable: srcTable,
-            rightTable: refTable,
-            leftCols: msg.edge.sourceColumns.map((c) => c.replace(/_id$/, '') + '_id'),
-            rightCols: msg.edge.targetColumns.map((c) => c.replace(/_id$/, '') + '_id'),
-            leftRefCols: msg.edge.sourceColumns,
-            rightRefCols: msg.edge.targetColumns,
-          });
-          await this.mutations.proposePreviewConfirmExecute({
-            connectionId: doc.connectionId,
-            title: 'Create N:M junction table',
-            intent: 'physical-nm',
-            sql,
-          });
-        } else {
-          const sql = this.mutations.buildPhysicalFkSql({
-            schema: srcSchema,
-            table: srcTable,
-            constraintName: `fk_${srcTable}_${refTable}_${Date.now().toString(36)}`,
-            columns: msg.edge.sourceColumns,
-            refSchema,
-            refTable,
-            refColumns: msg.edge.targetColumns,
-          });
-          await this.mutations.proposePreviewConfirmExecute({
-            connectionId: doc.connectionId,
-            title: 'Create foreign key',
-            intent: 'physical-fk',
-            sql,
-          });
+
+        let next = parseDocument(document.getText());
+        const edgeId =
+          result.mode === 'physical' && result.edge.constraintName
+            ? `fk:${result.edge.sourceTableId}:${result.edge.constraintName}`
+            : result.edge.cardinality === 'N:M' && result.junctionTableId
+              ? `nm:${result.junctionTableId}`
+              : `visual:${Date.now().toString(36)}`;
+
+        const edge = {
+          ...result.edge,
+          id: edgeId,
+        };
+
+        // For N:M physical: place junction table node if catalog has it
+        let nodes = next.nodes;
+        if (result.junctionTableId) {
+          const junction = this.catalog.getTable(doc.connectionId, result.junctionTableId);
+          if (junction && !nodes.some((n) => n.tableId === junction.id)) {
+            const srcNode = nodes.find((n) => n.tableId === msg.sourceTableId);
+            const tgtNode = nodes.find((n) => n.tableId === msg.targetTableId);
+            const x =
+              srcNode && tgtNode
+                ? (srcNode.x + tgtNode.x) / 2
+                : (srcNode?.x ?? 0) + 240;
+            const y =
+              srcNode && tgtNode
+                ? (srcNode.y + tgtNode.y) / 2 + 40
+                : (srcNode?.y ?? 0) + 80;
+            nodes = [
+              ...nodes,
+              {
+                tableId: junction.id,
+                x,
+                y,
+                width: 200,
+                height: 120,
+              },
+            ];
+          }
+        }
+
+        const edges = next.edges.some((e) => e.id === edge.id)
+          ? next.edges.map((e) => (e.id === edge.id ? edge : e))
+          : [...next.edges, edge];
+
+        next = {
+          ...next,
+          nodes,
+          edges,
+          updatedAt: new Date().toISOString(),
+        };
+        await this.writeDocument(document, next);
+
+        // Push fresh column hydrate for child / junction after physical DDL
+        if (result.mode === 'physical') {
+          for (const id of [msg.sourceTableId, result.junctionTableId].filter(Boolean) as string[]) {
+            const t = this.catalog.getTable(doc.connectionId, id);
+            if (t) {
+              post({
+                type: 'hydrateColumns',
+                tableId: t.id,
+                columns: t.columns ?? [],
+                indexes: t.indexes ?? [],
+                foreignKeys: t.foreignKeys ?? [],
+              });
+            }
+          }
+          const summaries = this.catalog.getSummaries(doc.connectionId);
+          const changed = summaries.filter(
+            (s) =>
+              s.id === msg.sourceTableId ||
+              s.id === msg.targetTableId ||
+              s.id === result.junctionTableId
+          );
+          if (changed.length) {
+            post({
+              type: 'catalogPatch',
+              patch: {
+                tablesAdded: result.junctionTableId
+                  ? changed.filter((s) => s.id === result.junctionTableId)
+                  : [],
+                tablesRemoved: [],
+                tablesChanged: changed.filter((s) => s.id !== result.junctionTableId),
+                edgesAdded: [edge],
+                edgesRemoved: [],
+                edgesChanged: [],
+              },
+            });
+          }
         }
         break;
       }
       case 'proposeInferredAction': {
         const doc = parseDocument(document.getText());
-        const edge = doc.edges.find((e) => e.id === msg.edgeId);
-        if (!edge || edge.relationshipKind !== 'inferred') {
+        const edge = findInferredEdge(doc, msg.edgeId);
+        if (!edge) {
           throw new Error('Not an inferred edge');
         }
         if (msg.action === 'reject') {
-          const next = {
-            ...doc,
-            edges: doc.edges.map((e) => (e.id === msg.edgeId ? { ...e, hidden: true } : e)),
-            updatedAt: new Date().toISOString(),
-          };
-          await this.writeDocument(document, next);
+          await this.writeDocument(document, applyInferredReject(doc, msg.edgeId));
         } else if (msg.action === 'accept-visual') {
-          const next = {
-            ...doc,
-            edges: doc.edges.map((e) =>
-              e.id === msg.edgeId ? { ...e, relationshipKind: 'visual' as const } : e
-            ),
-            updatedAt: new Date().toISOString(),
-          };
-          await this.writeDocument(document, next);
+          await this.writeDocument(document, applyInferredAcceptVisual(doc, msg.edgeId));
         } else if (msg.action === 'promote-physical') {
-          const [srcSchema, srcTable] = edge.sourceTableId.split('.');
-          const [refSchema, refTable] = edge.targetTableId.split('.');
-          const sql = this.mutations.buildPhysicalFkSql({
-            schema: srcSchema,
-            table: srcTable,
-            constraintName: `fk_${srcTable}_${refTable}_inferred`,
-            columns: edge.sourceColumns,
-            refSchema,
-            refTable,
-            refColumns: edge.targetColumns,
-          });
-          await this.mutations.proposePreviewConfirmExecute({
+          if (!doc.connectionId) {
+            throw new Error('Diagram has no connectionId — reconnect / reverse-engineer first');
+          }
+          await this.ensureTablesHydrated(doc.connectionId, [
+            edge.sourceTableId,
+            edge.targetTableId,
+          ]);
+          const sourceTable = this.catalog.getTable(doc.connectionId, edge.sourceTableId);
+          const targetTable = this.catalog.getTable(doc.connectionId, edge.targetTableId);
+          if (!sourceTable || !targetTable) {
+            throw new Error('Source/target tables not in catalog');
+          }
+          // Tight promote path: prefill columns from the inferred edge
+          const result = await runPromoteInferredWizard({
             connectionId: doc.connectionId,
-            title: 'Promote inferred relationship to FK',
-            intent: 'promote-inferred',
-            sql,
+            sourceTable,
+            targetTable,
+            mutations: this.mutations,
+            prefill: {
+              sourceColumns: edge.sourceColumns,
+              targetColumns: edge.targetColumns,
+              cardinality: edge.cardinality,
+              mappingLabel: formatInferredMapping(edge),
+            },
           });
+          if (result.applied && result.mode === 'physical' && result.edge) {
+            const next = {
+              ...doc,
+              edges: doc.edges.map((e) =>
+                e.id === msg.edgeId
+                  ? {
+                      ...result.edge!,
+                      id: result.edge!.constraintName
+                        ? `fk:${result.edge!.sourceTableId}:${result.edge!.constraintName}`
+                        : e.id,
+                    }
+                  : e
+              ),
+              updatedAt: new Date().toISOString(),
+            };
+            await this.writeDocument(document, next);
+          }
         }
         break;
       }
-      case 'editTable':
+      case 'editTable': {
+        const doc = parseDocument(document.getText());
+        if (!doc.connectionId) {
+          throw new Error('Diagram has no connectionId — reconnect / reverse-engineer first');
+        }
+        let table = this.catalog.getTable(doc.connectionId, msg.tableId);
+        if (!table?.columnsHydrated || !table.columns?.length) {
+          // Ensure columns are available for alter/drop pickers
+          await this.catalog.refresh(doc.connectionId, {
+            full: false,
+            schemas: table ? [table.schema] : msg.tableId.includes('.')
+              ? [msg.tableId.split('.')[0]]
+              : undefined,
+          });
+          table = this.catalog.getTable(doc.connectionId, msg.tableId);
+        }
+        if (!table) {
+          throw new Error(`Table not in catalog: ${msg.tableId}`);
+        }
+
+        const result = await runTableEditWizard({
+          connectionId: doc.connectionId,
+          table,
+          mutations: this.mutations,
+          action: msg.action,
+          columnName: msg.payload?.columnName,
+        });
+
+        if (result.applied) {
+          const refreshed = this.catalog.getTable(doc.connectionId, msg.tableId);
+          if (refreshed) {
+            post({
+              type: 'hydrateColumns',
+              tableId: refreshed.id,
+              columns: refreshed.columns ?? [],
+              indexes: refreshed.indexes ?? [],
+              foreignKeys: refreshed.foreignKeys ?? [],
+            });
+            const summary = this.catalog.toSummary(refreshed);
+            post({
+              type: 'catalogPatch',
+              patch: {
+                tablesAdded: [],
+                tablesRemoved: [],
+                tablesChanged: [summary],
+                edgesAdded: [],
+                edgesRemoved: [],
+                edgesChanged: [],
+              },
+            });
+          }
+          void vscode.window.showInformationMessage(
+            result.action === 'dropColumn'
+              ? `Dropped column on ${msg.tableId}`
+              : result.action === 'addColumn'
+                ? `Added column on ${msg.tableId}`
+                : `Altered column on ${msg.tableId}`
+          );
+        }
+        break;
+      }
       case 'exportRequest':
         // Handled via commands for now
         break;
       default:
         break;
+    }
+  }
+
+  private async ensureTablesHydrated(connectionId: string, tableIds: string[]): Promise<void> {
+    const schemas = new Set<string>();
+    let needsRefresh = false;
+    for (const id of tableIds) {
+      const t = this.catalog.getTable(connectionId, id);
+      if (!t || !t.columnsHydrated || !t.columns?.length) {
+        needsRefresh = true;
+        const schema = t?.schema ?? id.split('.')[0];
+        if (schema) {
+          schemas.add(schema);
+        }
+      }
+    }
+    if (needsRefresh) {
+      await this.catalog.refresh(connectionId, {
+        full: false,
+        schemas: schemas.size ? [...schemas] : undefined,
+      });
     }
   }
 

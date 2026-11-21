@@ -288,13 +288,22 @@ export type HostToWebviewMessage =
   | { type: 'layoutResult'; nodes: DiagramNodeLayout[] }
   | { type: 'error'; message: string };
 
+/** ERD → host: edit table columns via MutationPipeline (SQL preview + confirm). */
+export type EditTableAction = 'open' | 'addColumn' | 'alterColumn' | 'dropColumn';
+
+export interface EditTablePayload {
+  /** Pre-select column for alter/drop */
+  columnName?: string;
+}
+
 export type WebviewToHostMessage =
   | { type: 'ready' }
   | { type: 'updateDocument'; document: ErdDocument; reason: string }
   | { type: 'requestHydrate'; tableId: string }
   | { type: 'requestAutoLayout'; tableIds: string[] }
-  | { type: 'createRelationship'; edge: Omit<DiagramEdge, 'id'>; mode: 'visual' | 'physical' }
-  | { type: 'editTable'; tableId: string; action: string; payload: unknown }
+  /** Draw connection on canvas → host RelationshipWizard (column pick + optional physical DDL). */
+  | { type: 'createRelationship'; sourceTableId: string; targetTableId: string }
+  | { type: 'editTable'; tableId: string; action: EditTableAction; payload?: EditTablePayload }
   | { type: 'proposeInferredAction'; edgeId: string; action: 'accept-visual' | 'promote-physical' | 'reject' }
   | { type: 'exportRequest'; format: 'json' | 'sql' | 'dbml' };
 

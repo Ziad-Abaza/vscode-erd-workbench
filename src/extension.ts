@@ -6,10 +6,17 @@ import { SchemaSyncService } from './schema/SchemaSyncService';
 import { SqlParserService } from './sql/parser/SqlParserService';
 import { SqlPolicyGate } from './sql/policy/SqlPolicyGate';
 import { SqlExecutionService } from './sql/execution/SqlExecutionService';
+import { SqlRunRegistry } from './sql/execution/SqlRunRegistry';
+import { SqlResultsPanel } from './sql/results/SqlResultsPanel';
 import { ApprovalStore } from './mutation/ApprovalStore';
 import { MutationPipeline } from './mutation/MutationPipeline';
 import { ReverseEngineerService } from './engineering/ReverseEngineerService';
 import { exportDbml, exportJsonPackage, exportSqlDdl } from './engineering/ImportExport';
+import {
+  detectImportFormat,
+  importAndBuildDiagram,
+  type ImportFormat,
+} from './engineering/importers';
 import { SchemaExplorerProvider, type ExplorerNode } from './explorer/SchemaExplorerProvider';
 import { ErdTextEditorProvider, openDiagramDocument, parseDocument } from './editor/ErdTextEditorProvider';
 import { McpToolHost } from './mcp/McpToolHost';
@@ -28,6 +35,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const parser = new SqlParserService();
   const gate = new SqlPolicyGate(parser);
   const sql = new SqlExecutionService(connections, gate);
+  const sqlRuns = new SqlRunRegistry();
+  const sqlResults = new SqlResultsPanel(context, connections, sql, sqlRuns);
   const approvals = new ApprovalStore();
   const mutations = new MutationPipeline(sql, parser, catalog, diff, approvals);
   const reverse = new ReverseEngineerService(catalog);
@@ -60,6 +69,8 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar,
     connections,
     { dispose: () => bridge.dispose() },
+    { dispose: () => sqlRuns.dispose() },
+    { dispose: () => sqlResults.dispose() },
     vscode.window.registerTreeDataProvider('erdWorkbench.explorer', explorer),
     vscode.window.registerCustomEditorProvider(
       ErdTextEditorProvider.viewType,
@@ -247,11 +258,21 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   register('erdWorkbench.executeSql', async () => {
-    await executeActiveSql(connections, sql, false);
+    await executeActiveSql(connections, sqlResults, false);
   });
 
   register('erdWorkbench.executeSqlSelection', async () => {
-    await executeActiveSql(connections, sql, true);
+    await executeActiveSql(connections, sqlResults, true);
+  });
+
+  register('erdWorkbench.showSqlResults', async () => {
+    sqlResults.reveal();
+  });
+
+  register('erdWorkbench.cancelSql', async () => {
+    if (!sqlResults.cancelActive()) {
+      vscode.window.showInformationMessage('No running SQL query to cancel.');
+    }
   });
 
   register('erdWorkbench.schemaDiff', async () => {
@@ -317,9 +338,138 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   register('erdWorkbench.importSchema', async () => {
-    vscode.window.showInformationMessage(
-      'Import: open a SQL/DBML/JSON file and use Reverse Engineer or Mutation proposals to apply. Auto-apply is disabled by design.'
+    const source = await vscode.window.showQuickPick(
+      [
+        { label: '$(file) From file…', source: 'file' as const },
+        { label: '$(file-code) From active editor', source: 'editor' as const },
+      ],
+      {
+        title: 'Import schema (DBML / SQL / JSON)',
+        placeHolder: 'Opens a private diagram — does not write into the project or apply DDL',
+      }
     );
+    if (!source) {
+      return;
+    }
+
+    let content = '';
+    let fileHint = '';
+    if (source.source === 'file') {
+      const uris = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel: 'Import',
+        filters: {
+          'Schema files': ['sql', 'dbml', 'json'],
+          'All files': ['*'],
+        },
+      });
+      if (!uris?.[0]) {
+        return;
+      }
+      content = Buffer.from(await vscode.workspace.fs.readFile(uris[0])).toString('utf8');
+      fileHint = uris[0].fsPath;
+    } else {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showErrorMessage('No active editor');
+        return;
+      }
+      content = editor.document.getText();
+      fileHint = editor.document.fileName;
+    }
+
+    if (!content.trim()) {
+      vscode.window.showErrorMessage('Nothing to import (empty content)');
+      return;
+    }
+
+    let format = detectImportFormat(content, fileHint);
+    if (!format) {
+      format = await vscode.window.showQuickPick(
+        [
+          { label: 'json', description: 'erd-workbench package / catalog / diagram' },
+          { label: 'sql', description: 'CREATE TABLE + ALTER FK DDL' },
+          { label: 'dbml', description: 'dbdiagram.io DBML' },
+        ] as Array<{ label: ImportFormat; description: string }>,
+        { title: 'Could not detect format — choose one' }
+      ).then((p) => p?.label);
+    }
+    if (!format) {
+      return;
+    }
+
+    const link = await vscode.window.showQuickPick(
+      [
+        {
+          label: '$(plug) Link to active connection',
+          description: 'Set diagram connectionId (still does not apply DDL)',
+          mode: 'connection' as const,
+        },
+        {
+          label: '$(circle-outline) Offline diagram',
+          description: 'No connection — schema snapshot only',
+          mode: 'offline' as const,
+        },
+      ],
+      { title: 'Import target' }
+    );
+    if (!link) {
+      return;
+    }
+
+    let connectionId = '';
+    let defaultSchema = 'default';
+    if (link.mode === 'connection') {
+      const id = await pickConnected(connections);
+      if (!id) {
+        return;
+      }
+      connectionId = id;
+      const profile = connections.listProfiles().find((p) => p.id === id);
+      defaultSchema = profile?.defaultSchema || profile?.database || 'default';
+    } else if (format === 'sql' || format === 'dbml') {
+      const schemaInput = await vscode.window.showInputBox({
+        title: 'Default schema for unqualified table names',
+        value: 'default',
+        prompt: 'Used when SQL/DBML omits schema qualifiers',
+      });
+      if (schemaInput === undefined) {
+        return;
+      }
+      defaultSchema = schemaInput.trim() || 'default';
+    }
+
+    try {
+      const pageSize = vscode.workspace
+        .getConfiguration('erdWorkbench')
+        .get<number>('defaultDiagramPageSize', 40);
+      const { imported, document } = importAndBuildDiagram(content, format, {
+        connectionId,
+        defaultSchema,
+        pageSize,
+        name: fileHint
+          ? `Imported ${fileHint.split(/[/\\]/).pop()}`
+          : undefined,
+      });
+
+      await openDiagramDocument(document, (d) => diagramStorage.save(d));
+      explorer.refresh();
+
+      const warn =
+        imported.warnings.length > 0
+          ? ` · ${imported.warnings.length} warning(s)`
+          : '';
+      vscode.window.showInformationMessage(
+        `Imported ${imported.tables.length} table(s) as private diagram (${format})${warn}. DDL was not applied to any database.`
+      );
+      if (imported.warnings.length) {
+        console.warn('[erdWorkbench.importSchema]', imported.warnings);
+      }
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `Import failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   });
 
   register('erdWorkbench.autoLayoutSelection', async () => {
@@ -433,7 +583,7 @@ async function pickConnected(connections: ConnectionManager): Promise<string | u
 
 async function executeActiveSql(
   connections: ConnectionManager,
-  sql: SqlExecutionService,
+  resultsPanel: SqlResultsPanel,
   selectionOnly: boolean
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
@@ -451,18 +601,16 @@ async function executeActiveSql(
     return;
   }
   try {
-    const result = await sql.execute(id, text, 'sql-runner');
-    const lines = [
-      `Risk: ${result.risk}`,
-      result.affectedRows !== undefined ? `Affected rows: ${result.affectedRows}` : undefined,
-      result.truncated ? `Truncated to ${result.rows.length} rows` : undefined,
-      result.columns.length ? result.columns.join('\t') : undefined,
-      ...result.rows.map((r) => result.columns.map((c) => String(r[c] ?? '')).join('\t')),
-    ].filter(Boolean);
-    const out = vscode.window.createOutputChannel('ERD Workbench SQL');
-    out.clear();
-    out.appendLine(lines.join('\n'));
-    out.show(true);
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'ERD Workbench: Running SQL…',
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        await resultsPanel.execute(id, text, { cancellationToken: token });
+      }
+    );
   } catch (err) {
     vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
   }

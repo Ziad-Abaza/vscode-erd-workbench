@@ -14,7 +14,7 @@ Production-oriented VS Code extension for **MySQL** and **MariaDB**: connections
 - Lazy schema explorer (databases → tables/views → columns / indexes / composite FKs)
 - SQL runner with **parser-based** risk classification (`node-sql-parser`); destructive ops always confirmed in the Extension Host
 - Reverse engineer → `*.erd.json` **Custom Text Editor** (dirty state, save, undo/redo via text document edits, hot exit)
-- Interactive ERD: drag tables, filters, inferred/visual/physical edges, auto-layout (ELK) on selection, viewport culling for large schemas
+- Interactive ERD: drag tables, filters, collapsible schema swimlanes/groups, inferred/visual/physical edges with on-canvas Accept / Promote / Reject, auto-layout (ELK) on selection, viewport culling for large schemas
 - Relationship draw is **visual-only by default**; physical FK / N:M junction requires SQL preview + confirm
 - Schema Diff, export JSON / SQL / DBML
 - MCP tools: **read** / **propose** / **execute** with content-bound, single-use approval tokens
@@ -26,23 +26,23 @@ npm install
 npm run package
 ```
 
-This creates `erd-workbench-0.1.0.vsix` in the project root.
+This creates `erd-workbench-0.1.9.vsix` in the project root.
 
 **VS Code**
 1. `Ctrl+Shift+P` → **Extensions: Install from VSIX...**
-2. Select `erd-workbench-0.1.0.vsix`
+2. Select `erd-workbench-0.1.9.vsix`
 3. Reload the window if prompted
 
 Or from a terminal:
 
 ```bash
-code --install-extension .\erd-workbench-0.1.0.vsix
+code --install-extension .\erd-workbench-0.1.9.vsix
 ```
 
 **Cursor**
 
 ```bash
-cursor --install-extension .\erd-workbench-0.1.0.vsix
+cursor --install-extension .\erd-workbench-0.1.9.vsix
 ```
 
 After install, open the **ERD Workbench** activity-bar icon or run **ERD Workbench: Add Connection**.

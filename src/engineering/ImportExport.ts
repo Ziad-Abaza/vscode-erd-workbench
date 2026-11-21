@@ -1,5 +1,17 @@
 import type { CatalogSnapshot, TableMeta, ErdDocument, DiagramEdge } from '../../shared/types';
 
+/** Re-export importers so callers can use one engineering entrypoint. */
+export {
+  detectImportFormat,
+  importSchemaContent,
+  importAndBuildDiagram,
+  buildDiagramFromImport,
+  parseDbml,
+  parseJsonPackage,
+  parseSqlDdl,
+} from './importers';
+export type { ImportFormat, ImportOptions, SchemaImportResult } from './importers';
+
 export function exportJsonPackage(catalog: CatalogSnapshot, diagram?: ErdDocument): string {
   return JSON.stringify(
     {

@@ -1,42 +1,85 @@
-import { memo } from 'react';
+import { memo, type MouseEvent } from 'react';
 import {
   BaseEdge,
   EdgeLabelRenderer,
   getSmoothStepPath,
   type EdgeProps,
 } from '@xyflow/react';
+import { buildOrthogonalPath, type HandleSide } from '../../../shared/routing';
+
+export type InferredEdgeAction = 'accept-visual' | 'promote-physical' | 'reject';
 
 export interface OrthogonalEdgeData {
   relationshipKind: 'physical' | 'visual' | 'inferred';
   label?: string;
   cardinality?: string;
+  sourceSide?: HandleSide;
+  targetSide?: HandleSide;
+  sourcePortOffset?: number;
+  targetPortOffset?: number;
+  bundleLane?: number;
+  bundleOffset?: number;
+  /** Canvas controls for inferred suggestions — host applies via proposeInferredAction */
+  onInferredAction?: (action: InferredEdgeAction) => void;
 }
 
 /**
- * Orthogonal-ish routing via smooth-step (right angles).
- * Crossing reduction / bundling is applied upstream when assigning handles.
+ * Orthogonal routing with port offsets + light parallel bundling from the shared router.
+ * Inferred edges always show Accept / Promote / Reject controls on the label.
  */
 function OrthogonalEdgeComponent(props: EdgeProps) {
   const data = (props.data ?? {}) as OrthogonalEdgeData;
-  const [path, labelX, labelY] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
-    targetX: props.targetX,
-    targetY: props.targetY,
-    sourcePosition: props.sourcePosition,
-    targetPosition: props.targetPosition,
-    borderRadius: 8,
-    offset: 20,
-  });
+  const sourceSide = data.sourceSide;
+  const targetSide = data.targetSide;
 
-  const cls =
-    data.relationshipKind === 'inferred'
-      ? 'edge-inferred'
-      : data.relationshipKind === 'visual'
-        ? 'edge-visual'
-        : 'edge-physical';
+  const routed =
+    sourceSide && targetSide
+      ? buildOrthogonalPath({
+          sourceX: props.sourceX,
+          sourceY: props.sourceY,
+          targetX: props.targetX,
+          targetY: props.targetY,
+          sourceSide,
+          targetSide,
+          sourcePortOffset: data.sourcePortOffset ?? 0,
+          targetPortOffset: data.targetPortOffset ?? 0,
+          bundleOffset: data.bundleOffset ?? 0,
+          stem: 18,
+          borderRadius: 8,
+        })
+      : null;
 
-  const showLabel = props.selected || (props.style?.opacity !== 0 && props.markerEnd);
+  const fallback = routed
+    ? null
+    : getSmoothStepPath({
+        sourceX: props.sourceX,
+        sourceY: props.sourceY,
+        targetX: props.targetX,
+        targetY: props.targetY,
+        sourcePosition: props.sourcePosition,
+        targetPosition: props.targetPosition,
+        borderRadius: 8,
+        offset: 20 + Math.abs(data.bundleOffset ?? 0),
+      });
+
+  const path = routed?.path ?? fallback?.[0] ?? '';
+  const labelX = routed?.labelX ?? fallback?.[1] ?? (props.sourceX + props.targetX) / 2;
+  const labelY = routed?.labelY ?? fallback?.[2] ?? (props.sourceY + props.targetY) / 2;
+
+  const isInferred = data.relationshipKind === 'inferred';
+  const cls = isInferred
+    ? 'edge-inferred'
+    : data.relationshipKind === 'visual'
+      ? 'edge-visual'
+      : 'edge-physical';
+
+  const showLabel = Boolean(props.selected || data.label || isInferred);
+
+  const fire = (action: InferredEdgeAction) => (ev: MouseEvent) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    data.onInferredAction?.(action);
+  };
 
   return (
     <>
@@ -46,29 +89,57 @@ function OrthogonalEdgeComponent(props: EdgeProps) {
         markerEnd={props.markerEnd}
         style={{
           ...props.style,
-          strokeWidth: props.selected ? 2.5 : 1.5,
+          strokeWidth: props.selected || isInferred ? 2.5 : 1.5,
         }}
         className={cls}
         interactionWidth={24}
       />
-      {(props.selected || showLabel) && data.label && (
+      {showLabel && (
         <EdgeLabelRenderer>
           <div
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
               pointerEvents: 'all',
-              fontSize: 10,
-              padding: '1px 4px',
-              borderRadius: 3,
-              background: 'rgba(0,0,0,0.65)',
-              color: '#eee',
-              whiteSpace: 'nowrap',
             }}
-            className="nodrag nopan"
+            className={`nodrag nopan edge-label-wrap${isInferred ? ' edge-label-wrap--inferred' : ''}${
+              props.selected ? ' is-selected' : ''
+            }`}
           >
-            {data.cardinality ? `${data.cardinality} ` : ''}
-            {data.label}
+            {(data.label || data.cardinality) && (
+              <div className={`edge-label${isInferred ? ' edge-label--inferred' : ''}`}>
+                {data.cardinality ? `${data.cardinality} ` : ''}
+                {data.label}
+              </div>
+            )}
+            {isInferred && data.onInferredAction && (
+              <div className="edge-inferred-actions" role="group" aria-label="Inferred relationship actions">
+                <button
+                  type="button"
+                  className="edge-inferred-btn edge-inferred-btn--accept"
+                  title="Accept as visual relationship (no DDL)"
+                  onClick={fire('accept-visual')}
+                >
+                  ✓ Visual
+                </button>
+                <button
+                  type="button"
+                  className="edge-inferred-btn edge-inferred-btn--promote"
+                  title="Promote to physical FK (SQL preview + confirm)"
+                  onClick={fire('promote-physical')}
+                >
+                  ↑ Physical
+                </button>
+                <button
+                  type="button"
+                  className="edge-inferred-btn edge-inferred-btn--reject"
+                  title="Dismiss this suggestion"
+                  onClick={fire('reject')}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
           </div>
         </EdgeLabelRenderer>
       )}

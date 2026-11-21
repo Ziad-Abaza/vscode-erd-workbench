@@ -54,7 +54,11 @@ export class McpToolHost {
       { name: 'move_tables', tier: 'diagram', description: 'Move tables by dx/dy or absolute — live' },
       { name: 'apply_layout', tier: 'diagram', description: 'Auto-layout selection or current page — live' },
       { name: 'arrange_page_grid', tier: 'diagram', description: 'Grid-arrange current page — live' },
-      { name: 'create_group', tier: 'diagram', description: 'Group tables under a named group — live' },
+      { name: 'create_group', tier: 'diagram', description: 'Group tables under a named swimlane — live' },
+      { name: 'toggle_group', tier: 'diagram', description: 'Collapse/expand a swimlane group — live' },
+      { name: 'dissolve_group', tier: 'diagram', description: 'Remove a group; tables stay on canvas — live' },
+      { name: 'auto_group_by_schema', tier: 'diagram', description: 'One swimlane per database schema — live' },
+      { name: 'layout_swimlanes', tier: 'diagram', description: 'Stack groups as horizontal swimlanes — live' },
       { name: 'focus_neighborhood', tier: 'diagram', description: 'Focus N-hop neighborhood around a table — live' },
       { name: 'set_viewport', tier: 'diagram', description: 'Set canvas viewport x/y/zoom — live' },
 
@@ -204,6 +208,22 @@ export class McpToolHost {
         }
         const erd = await this.diagrams.createGroup(name, tableIds, optStr(args.uri));
         return { ok: true, groups: erd.groups };
+      }
+      case 'toggle_group': {
+        const erd = await this.diagrams.toggleGroup(str(args.groupId), optStr(args.uri));
+        return { ok: true, groups: erd.groups };
+      }
+      case 'dissolve_group': {
+        const erd = await this.diagrams.dissolveGroup(str(args.groupId), optStr(args.uri));
+        return { ok: true, groups: erd.groups };
+      }
+      case 'auto_group_by_schema': {
+        const erd = await this.diagrams.autoGroupBySchema(optStr(args.uri));
+        return { ok: true, groups: erd.groups };
+      }
+      case 'layout_swimlanes': {
+        const erd = await this.diagrams.layoutSwimlanes(optStr(args.uri));
+        return { ok: true, groups: erd.groups, updatedAt: erd.updatedAt };
       }
       case 'focus_neighborhood': {
         const erd = await this.diagrams.focusNeighborhood(

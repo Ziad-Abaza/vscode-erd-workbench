@@ -405,12 +405,11 @@ function isMysqlQueryInterrupted(err: unknown): boolean {
     err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : '';
   const errno =
     err && typeof err === 'object' && 'errno' in err ? Number((err as { errno: unknown }).errno) : 0;
+  // 1317 ER_QUERY_INTERRUPTED, 1836 ER_SESSION_WAS_KILLED (MariaDB variants)
   return (
     errno === 1317 ||
     errno === 1836 ||
     code === 'ER_QUERY_INTERRUPTED' ||
-    /Query execution was interrupted|Query cancelled|CONNECTION_CLOSED|PROTOCOL_CONNECTION_LOST/i.test(
-      message
-    )
+    /Query execution was interrupted/i.test(message)
   );
 }

@@ -34,10 +34,8 @@ const cliBuild = {
   },
 };
 
-const webviewBuild = {
-  entryPoints: ['webview/erd-editor/main.tsx'],
+const webviewCommon = {
   bundle: true,
-  outfile: 'dist/webview/erdEditor.js',
   format: 'iife',
   platform: 'browser',
   target: 'es2022',
@@ -52,17 +50,31 @@ const webviewBuild = {
   },
 };
 
+const erdWebviewBuild = {
+  ...webviewCommon,
+  entryPoints: ['webview/erd-editor/main.tsx'],
+  outfile: 'dist/webview/erdEditor.js',
+};
+
+const sqlResultsWebviewBuild = {
+  ...webviewCommon,
+  entryPoints: ['webview/sql-results/main.tsx'],
+  outfile: 'dist/webview/sqlResults.js',
+};
+
 async function run() {
   if (watch) {
     const extCtx = await esbuild.context(extensionBuild);
-    const webCtx = await esbuild.context(webviewBuild);
+    const erdCtx = await esbuild.context(erdWebviewBuild);
+    const sqlCtx = await esbuild.context(sqlResultsWebviewBuild);
     const cliCtx = await esbuild.context(cliBuild);
-    await Promise.all([extCtx.watch(), webCtx.watch(), cliCtx.watch()]);
-    console.log('Watching extension + webview + cli…');
+    await Promise.all([extCtx.watch(), erdCtx.watch(), sqlCtx.watch(), cliCtx.watch()]);
+    console.log('Watching extension + webviews + cli…');
   } else {
     await Promise.all([
       esbuild.build(extensionBuild),
-      esbuild.build(webviewBuild),
+      esbuild.build(erdWebviewBuild),
+      esbuild.build(sqlResultsWebviewBuild),
       esbuild.build(cliBuild),
     ]);
     console.log('Build complete');

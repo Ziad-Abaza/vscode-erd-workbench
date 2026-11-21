@@ -48,7 +48,11 @@ export class SqlResultsPanel {
     return cancelled;
   }
 
-  async execute(connectionId: string, sqlText: string): Promise<void> {
+  async execute(
+    connectionId: string,
+    sqlText: string,
+    options?: { cancellationToken?: vscode.CancellationToken }
+  ): Promise<void> {
     const profile = this.connections.getProfile(connectionId);
     if (!profile) {
       throw new Error(`Unknown connection: ${connectionId}`);
@@ -58,6 +62,14 @@ export class SqlResultsPanel {
     this.panel?.reveal(vscode.ViewColumn.Beside, true);
 
     const active = this.runs.create(connectionId);
+    const token = options?.cancellationToken;
+    const tokenSub = token?.onCancellationRequested(() => {
+      this.runs.cancel(active.runId);
+    });
+    if (token?.isCancellationRequested) {
+      this.runs.cancel(active.runId);
+    }
+
     const preview = sqlText.trim().replace(/\s+/g, ' ').slice(0, 160);
     const snapshot: SqlRunSnapshot = {
       runId: active.runId,
@@ -120,6 +132,7 @@ export class SqlResultsPanel {
         throw err;
       }
     } finally {
+      tokenSub?.dispose();
       this.runs.complete(active.runId);
       void vscode.commands.executeCommand(
         'setContext',
