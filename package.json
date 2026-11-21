@@ -2,7 +2,7 @@
   "name": "erd-workbench",
   "displayName": "ERD Workbench",
   "description": "MySQL/MariaDB visual database IDE with interactive ERD, SQL execution, and AI-native MCP tools",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "erd-workbench",
   "license": "MIT",
   "icon": "media/icon.png",

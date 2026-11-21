@@ -20,12 +20,23 @@ function TableNodeComponent(props: NodeProps) {
   const data = props.data as unknown as TableNodeData;
   const className = [
     'table-node',
+    `lod-${data.lod}`,
     data.kind === 'view' ? 'view' : '',
     data.orphaned ? 'orphaned' : '',
-    data.lod === 'far' ? 'lod-far' : '',
   ]
     .filter(Boolean)
     .join(' ');
+
+  const cols = data.columns ?? [];
+  const limit = data.lod === 'mid' ? 6 : 14;
+  const visibleCols = cols.slice(0, limit);
+  const remaining = Math.max(0, (cols.length || data.columnCount) - visibleCols.length);
+
+  // When columns not hydrated yet, still show PK hints from summary
+  const placeholderCols =
+    !cols.length && data.pkCols.length
+      ? data.pkCols.map((name) => ({ name, kind: 'pk' as const }))
+      : [];
 
   return (
     <div className={className}>
@@ -33,41 +44,58 @@ function TableNodeComponent(props: NodeProps) {
       <Handle type="source" position={Position.Right} id="s-right" />
       <div className="table-node__header" title={`${data.schema}.${data.name}`}>
         <span className="table-node__schema">{data.schema}.</span>
-        {data.name}
-        {data.kind === 'view' ? ' (view)' : ''}
-        {data.orphaned ? ' — removed' : ''}
+        <span className="table-node__name">{data.name}</span>
+        {data.kind === 'view' && <span className="table-node__tag">view</span>}
+        {data.orphaned && <span className="table-node__tag">gone</span>}
       </div>
+
       {data.lod !== 'far' && (
         <div className="table-node__cols">
-          {(data.columns ?? []).slice(0, data.lod === 'mid' ? 8 : 50).map((c) => {
-            const isPk = data.pkCols.includes(c.name);
-            const isFk = data.fkCols.includes(c.name);
+          {visibleCols.map((c) => {
+            const isPk = data.pkCols.includes(c.name) || c.columnKey === 'PRI';
+            const isFk = data.fkCols.includes(c.name) || c.columnKey === 'MUL';
             return (
               <div className="table-node__col" key={c.name}>
-                <span className={`table-node__badge ${isFk ? 'fk' : ''}`}>
+                <span className={`table-node__badge ${isFk && !isPk ? 'fk' : ''}`}>
                   {isPk ? 'PK' : isFk ? 'FK' : ''}
                 </span>
-                <span>{c.name}</span>
+                <span className="table-node__col-name">{c.name}</span>
                 <span className="table-node__type">{c.columnType}</span>
               </div>
             );
           })}
-          {data.lod === 'mid' && data.columnCount > 8 && (
+
+          {!visibleCols.length &&
+            placeholderCols.map((c) => (
+              <div className="table-node__col" key={c.name}>
+                <span className="table-node__badge">PK</span>
+                <span className="table-node__col-name">{c.name}</span>
+                <span className="table-node__type">key</span>
+              </div>
+            ))}
+
+          {!visibleCols.length && !placeholderCols.length && (
             <div className="table-node__col">
               <span />
-              <span className="table-node__type">+{data.columnCount - 8} more…</span>
-              <span />
-            </div>
-          )}
-          {!data.columns?.length && (
-            <div className="table-node__col">
-              <span />
-              <span className="table-node__type">{data.columnCount} columns</span>
-              <span />
+              <span className="table-node__col-name" style={{ color: 'var(--erd-muted)' }}>
+                Loading columns…
+              </span>
+              <span className="table-node__type">{data.columnCount || '—'}</span>
             </div>
           )}
         </div>
       )}
+
+      {data.lod !== 'far' && (remaining > 0 || (!cols.length && data.columnCount > 0)) && (
+        <div className="table-node__footer">
+          {cols.length
+            ? remaining > 0
+              ? `+${remaining} more · ${data.columnCount || cols.length} cols`
+              : `${cols.length} columns`
+            : `${data.columnCount} columns`}
+        </div>
+      )}
+
       <Handle type="target" position={Position.Top} id="t-top" />
       <Handle type="source" position={Position.Bottom} id="s-bottom" />
     </div>

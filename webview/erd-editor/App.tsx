@@ -46,6 +46,7 @@ export function App() {
   const [edges, setEdges] = useEdgesState<Edge>([]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const docRef = useRef<ErdDocument | null>(null);
+  const hydrateRequested = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     docRef.current = document;
@@ -275,8 +276,18 @@ export function App() {
     setNodes(rfNodes);
     setEdges(rfEdges);
     setStatus(
-      `Showing ${rfNodes.length}/${filteredTableIds.size} filtered · ${document.nodes.length} total · LOD ${nextLod}`
+      `${rfNodes.length} on canvas · ${filteredTableIds.size} filtered · ${document.nodes.length} total`
     );
+
+    // Auto-hydrate columns for visible tables (don't wait for hover)
+    if (nextLod !== 'far') {
+      for (const n of mount) {
+        if (!hydrated[n.tableId]?.columns && !hydrateRequested.current.has(n.tableId)) {
+          hydrateRequested.current.add(n.tableId);
+          post({ type: 'requestHydrate', tableId: n.tableId });
+        }
+      }
+    }
   }, [document, filteredTableIds, viewport, catalogIndex, hydrated, showInferred, setNodes, setEdges]);
 
   const scheduleSave = useCallback((next: ErdDocument) => {
@@ -321,7 +332,8 @@ export function App() {
   );
 
   const onNodeMouseEnter = useCallback((_: MouseEvent, node: Node) => {
-    if (!hydrated[node.id]?.columns) {
+    if (!hydrated[node.id]?.columns && !hydrateRequested.current.has(node.id)) {
+      hydrateRequested.current.add(node.id);
       post({ type: 'requestHydrate', tableId: node.id });
     }
   }, [hydrated]);
@@ -388,105 +400,129 @@ export function App() {
   };
 
   if (!document) {
-    return <div className="erd-app"><div className="erd-toolbar">Loading diagram…</div></div>;
+    return (
+      <div className="erd-app">
+        <div className="erd-toolbar">Loading diagram…</div>
+      </div>
+    );
   }
 
   return (
     <div className="erd-app">
       <div className="erd-toolbar">
-        <input
-          type="search"
-          placeholder="Filter tables…"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            persistFilters({ search: e.target.value });
-          }}
-        />
-        <label>
+        <div className="erd-toolbar__search">
+          <span className="erd-toolbar__search-icon">⌕</span>
           <input
-            type="checkbox"
-            checked={hideUnconnected}
+            type="search"
+            placeholder="Filter tables…"
+            value={search}
             onChange={(e) => {
-              setHideUnconnected(e.target.checked);
-              persistFilters({ hideUnconnected: e.target.checked });
+              setSearch(e.target.value);
+              persistFilters({ search: e.target.value });
             }}
           />
-          Hide unconnected
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={showInferred}
-            onChange={(e) => {
-              setShowInferred(e.target.checked);
-              persistFilters({ showInferred: e.target.checked });
-            }}
-          />
-          Show inferred
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={showViews}
-            onChange={(e) => {
-              setShowViews(e.target.checked);
-              persistFilters({ showViews: e.target.checked });
-            }}
-          />
-          Views
-        </label>
-        <button type="button" className="primary" onClick={autoLayout}>
-          Auto-layout selection
-        </button>
-        <label>
-          <input
-            type="checkbox"
-            checked={Boolean(document.filters.pageMode)}
-            onChange={(e) => {
-              persistFilters({
-                pageMode: e.target.checked,
-                pageIndex: 0,
-                pageSize: document.filters.pageSize ?? 50,
-              });
-            }}
-          />
-          Pages
-        </label>
+        </div>
+
+        <div className="erd-toolbar__group" role="group" aria-label="Filters">
+          <label className={`chip ${hideUnconnected ? 'is-on' : ''}`}>
+            <input
+              type="checkbox"
+              checked={hideUnconnected}
+              onChange={(e) => {
+                setHideUnconnected(e.target.checked);
+                persistFilters({ hideUnconnected: e.target.checked });
+              }}
+            />
+            Linked only
+          </label>
+          <label className={`chip ${showInferred ? 'is-on' : ''}`}>
+            <input
+              type="checkbox"
+              checked={showInferred}
+              onChange={(e) => {
+                setShowInferred(e.target.checked);
+                persistFilters({ showInferred: e.target.checked });
+              }}
+            />
+            Inferred
+          </label>
+          <label className={`chip ${showViews ? 'is-on' : ''}`}>
+            <input
+              type="checkbox"
+              checked={showViews}
+              onChange={(e) => {
+                setShowViews(e.target.checked);
+                persistFilters({ showViews: e.target.checked });
+              }}
+            />
+            Views
+          </label>
+          <label className={`chip ${document.filters.pageMode ? 'is-on' : ''}`}>
+            <input
+              type="checkbox"
+              checked={Boolean(document.filters.pageMode)}
+              onChange={(e) => {
+                persistFilters({
+                  pageMode: e.target.checked,
+                  pageIndex: 0,
+                  pageSize: document.filters.pageSize ?? 50,
+                });
+              }}
+            />
+            Pages
+          </label>
+        </div>
+
         {document.filters.pageMode && (
-          <>
+          <div className="erd-toolbar__group">
             <button
               type="button"
               disabled={pageInfo.pageIndex <= 0}
               onClick={() => persistFilters({ pageIndex: pageInfo.pageIndex - 1 })}
             >
-              Prev
+              ‹
             </button>
-            <span style={{ color: 'var(--erd-muted)' }}>
-              {pageInfo.pageIndex + 1}/{pageInfo.pageCount} ({pageInfo.total} tables)
+            <span className="erd-toolbar__meta" style={{ marginLeft: 0 }}>
+              {pageInfo.pageIndex + 1}/{pageInfo.pageCount}
             </span>
             <button
               type="button"
               disabled={pageInfo.pageIndex >= pageInfo.pageCount - 1}
               onClick={() => persistFilters({ pageIndex: pageInfo.pageIndex + 1 })}
             >
-              Next
+              ›
             </button>
             <button
               type="button"
               onClick={() =>
                 persistFilters({
-                  pageSize: Math.max(10, Number(window.prompt('Page size', String(pageInfo.pageSize)) || pageInfo.pageSize)),
+                  pageSize: Math.max(
+                    10,
+                    Number(window.prompt('Page size', String(pageInfo.pageSize)) || pageInfo.pageSize)
+                  ),
                   pageIndex: 0,
                 })
               }
             >
-              Page size
+              Size
             </button>
-          </>
+          </div>
         )}
-        <span style={{ color: 'var(--erd-muted)' }}>LOD: {lod}</span>
+
+        <button type="button" className="primary" onClick={autoLayout}>
+          Auto-layout
+        </button>
+        <button
+          type="button"
+          onClick={() => post({ type: 'requestAutoLayout', tableIds: [] })}
+          title="Arrange current page/filter as a compact grid via host layout"
+        >
+          Compact layout
+        </button>
+
+        <span className="erd-toolbar__meta">Zoom detail: {lod}</span>
       </div>
+
       <div className="erd-canvas-wrap">
         <ReactFlow
           nodes={nodes}
@@ -510,7 +546,10 @@ export function App() {
               });
               ro.observe(el);
             }
-            void instance;
+            // Fit lightly on first open if viewport is default origin
+            if (document.viewport.zoom === 1 && document.viewport.x === 0 && document.viewport.y === 0) {
+              requestAnimationFrame(() => instance.fitView({ padding: 0.12, maxZoom: 1 }));
+            }
           }}
           minZoom={0.05}
           maxZoom={2}
@@ -524,17 +563,33 @@ export function App() {
             zoom: document.viewport.zoom || 1,
           }}
           proOptions={{ hideAttribution: true }}
+          defaultEdgeOptions={{
+            type: 'orthogonal',
+            animated: false,
+          }}
         >
-          <Background gap={24} />
-          <Controls />
+          <Background gap={20} size={1} color="rgba(127,127,127,0.18)" />
+          <Controls showInteractive={false} />
           <MiniMap
             pannable
             zoomable
-            nodeColor={() => '#3794ff'}
-            maskColor="rgba(0,0,0,0.55)"
+            nodeStrokeWidth={2}
+            nodeColor={(n) => (n.selected ? '#4fc1ff' : '#3794ff')}
+            maskColor="rgba(0,0,0,0.45)"
           />
         </ReactFlow>
-        <div className="status-bar">{status}</div>
+      </div>
+
+      <div className="erd-footer">
+        <div>
+          <strong>{status}</strong>
+          {document.filters.pageMode
+            ? ` · page ${pageInfo.pageIndex + 1}/${pageInfo.pageCount}`
+            : ''}
+        </div>
+        <div className="erd-footer__hint">
+          Drag tables · Shift+select · Connect handles for relationships · Pages for large schemas
+        </div>
       </div>
     </div>
   );

@@ -40,14 +40,17 @@ export class ReverseEngineerService {
     );
 
     const nodes: DiagramNodeLayout[] = [];
-    const cols = Math.max(1, Math.ceil(Math.sqrt(tables.length)));
+    // Denser initial grid — less empty canvas for medium/large schemas
+    const cols = Math.max(1, Math.ceil(Math.sqrt(tables.length * 1.15)));
+    const gapX = 236;
+    const gapY = 132;
     tables.forEach((t, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
       nodes.push({
         tableId: t.id,
-        x: col * 280,
-        y: row * 200,
+        x: col * gapX,
+        y: row * gapY,
         pinned: false,
       });
     });

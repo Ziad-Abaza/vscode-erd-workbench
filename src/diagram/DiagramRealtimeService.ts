@@ -245,9 +245,9 @@ export class DiagramRealtimeService {
   async arrangePageGrid(uri?: string): Promise<ErdDocument> {
     const { document, erd } = await this.getActiveOrUri(uri);
     const visible = pageNodes(erd);
-    const cols = Math.max(1, Math.ceil(Math.sqrt(visible.length)));
-    const gapX = 280;
-    const gapY = 200;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(visible.length * 1.15)));
+    const gapX = 236;
+    const gapY = 132;
     const map = new Map<string, DiagramNodeLayout>();
     visible.forEach((n, i) => {
       map.set(n.tableId, {
