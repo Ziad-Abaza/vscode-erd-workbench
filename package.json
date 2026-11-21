@@ -1,0 +1,334 @@
+{
+  "name": "erd-workbench",
+  "displayName": "ERD Workbench",
+  "description": "MySQL/MariaDB visual database IDE with interactive ERD, SQL execution, and AI-native MCP tools",
+  "version": "0.1.0",
+  "publisher": "erd-workbench",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "mysql",
+    "mariadb",
+    "erd",
+    "database",
+    "schema",
+    "sql",
+    "dbdiagram",
+    "workbench"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onView:erdWorkbench.explorer",
+    "onCustomEditor:erdWorkbench.diagram",
+    "onCommand:erdWorkbench.addConnection",
+    "onCommand:erdWorkbench.reverseEngineer"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "erdWorkbench",
+          "title": "ERD Workbench",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "erdWorkbench": [
+        {
+          "id": "erdWorkbench.explorer",
+          "name": "Databases"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "erdWorkbench.addConnection",
+        "title": "ERD Workbench: Add Connection",
+        "icon": "$(add)"
+      },
+      {
+        "command": "erdWorkbench.editConnection",
+        "title": "ERD Workbench: Edit Connection"
+      },
+      {
+        "command": "erdWorkbench.deleteConnection",
+        "title": "ERD Workbench: Delete Connection",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "erdWorkbench.connect",
+        "title": "ERD Workbench: Connect",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "erdWorkbench.disconnect",
+        "title": "ERD Workbench: Disconnect",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "erdWorkbench.refreshCatalog",
+        "title": "ERD Workbench: Refresh Catalog",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "erdWorkbench.fullRefreshCatalog",
+        "title": "ERD Workbench: Full Refresh Catalog"
+      },
+      {
+        "command": "erdWorkbench.reverseEngineer",
+        "title": "ERD Workbench: Reverse Engineer Schema to Diagram"
+      },
+      {
+        "command": "erdWorkbench.executeSql",
+        "title": "ERD Workbench: Execute SQL"
+      },
+      {
+        "command": "erdWorkbench.executeSqlSelection",
+        "title": "ERD Workbench: Execute SQL Selection"
+      },
+      {
+        "command": "erdWorkbench.newDiagram",
+        "title": "ERD Workbench: New Diagram"
+      },
+      {
+        "command": "erdWorkbench.autoLayoutSelection",
+        "title": "ERD Workbench: Auto-Layout Selection"
+      },
+      {
+        "command": "erdWorkbench.focusNeighborhood",
+        "title": "ERD Workbench: Focus Neighborhood"
+      },
+      {
+        "command": "erdWorkbench.schemaDiff",
+        "title": "ERD Workbench: Schema Diff"
+      },
+      {
+        "command": "erdWorkbench.exportSchema",
+        "title": "ERD Workbench: Export Schema"
+      },
+      {
+        "command": "erdWorkbench.importSchema",
+        "title": "ERD Workbench: Import Schema"
+      },
+      {
+        "command": "erdWorkbench.reconnect",
+        "title": "ERD Workbench: Reconnect"
+      },
+      {
+        "command": "erdWorkbench.mcp.listTools",
+        "title": "ERD Workbench: List MCP Tools"
+      },
+      {
+        "command": "erdWorkbench.mcp.invoke",
+        "title": "ERD Workbench: Invoke MCP Tool"
+      },
+      {
+        "command": "erdWorkbench.syncActiveDiagram",
+        "title": "ERD Workbench: Sync Active Diagram with Schema"
+      },
+      {
+        "command": "erdWorkbench.diagram.setPage",
+        "title": "ERD Workbench: Set Diagram Page"
+      },
+      {
+        "command": "erdWorkbench.agentBridge.status",
+        "title": "ERD Workbench: Agent Bridge Status"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "erdWorkbench.addConnection",
+          "when": "view == erdWorkbench.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "erdWorkbench.refreshCatalog",
+          "when": "view == erdWorkbench.explorer",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "erdWorkbench.connect",
+          "when": "view == erdWorkbench.explorer && viewItem == connection",
+          "group": "inline"
+        },
+        {
+          "command": "erdWorkbench.disconnect",
+          "when": "view == erdWorkbench.explorer && viewItem == connectionActive",
+          "group": "inline"
+        },
+        {
+          "command": "erdWorkbench.reverseEngineer",
+          "when": "view == erdWorkbench.explorer && viewItem =~ /connection|schema/",
+          "group": "1_erd"
+        },
+        {
+          "command": "erdWorkbench.deleteConnection",
+          "when": "view == erdWorkbench.explorer && viewItem =~ /connection/",
+          "group": "9_danger"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "erdWorkbench.executeSql",
+          "when": "resourceExtname == .sql",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "erdWorkbench.executeSqlSelection",
+          "when": "editorHasSelection && resourceExtname == .sql",
+          "group": "navigation"
+        }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "erdWorkbench.diagram",
+        "displayName": "ERD Diagram",
+        "selector": [
+          {
+            "filenamePattern": "*.erd.json"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "configuration": {
+      "title": "ERD Workbench",
+      "properties": {
+        "erdWorkbench.catalogPageSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 50,
+          "maximum": 1000,
+          "description": "Number of tables to fetch per catalog page"
+        },
+        "erdWorkbench.autoLayoutNodeCap": {
+          "type": "number",
+          "default": 300,
+          "minimum": 50,
+          "maximum": 1000,
+          "description": "Maximum nodes included in a single auto-layout pass"
+        },
+        "erdWorkbench.confirmDestructiveSql": {
+          "type": "boolean",
+          "default": true,
+          "description": "Always require confirmation before destructive SQL (cannot be bypassed for MCP)"
+        },
+        "erdWorkbench.confirmWriteSql": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require confirmation before non-destructive write SQL from the SQL runner"
+        },
+        "erdWorkbench.allowUnattendedWrites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow non-destructive writes without confirmation. Destructive operations always require confirmation. MCP never uses unattended writes."
+        },
+        "erdWorkbench.allowUnknownCall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow CALL statements when routine body cannot be analyzed (fail-open for CALL only). Default deny."
+        },
+        "erdWorkbench.sslDefaultMode": {
+          "type": "string",
+          "enum": [
+            "disable",
+            "preferred",
+            "required",
+            "verify-ca",
+            "verify-identity"
+          ],
+          "default": "preferred",
+          "description": "Default SSL mode for new connections"
+        },
+        "erdWorkbench.autoReconnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically attempt reconnection with backoff when a connection drops"
+        },
+        "erdWorkbench.inferredRelationships": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable optional inferred (non-FK) relationship suggestions on diagrams"
+        },
+        "erdWorkbench.enableAgentBridge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start localhost Agent Bridge so CLI/agents can control diagrams in real time"
+        },
+        "erdWorkbench.agentBridgePort": {
+          "type": "number",
+          "default": 3847,
+          "description": "Localhost port for the Agent Bridge HTTP API"
+        },
+        "erdWorkbench.defaultDiagramPageSize": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "Default page size when diagram page mode is enabled for large schemas"
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "sql",
+        "extensions": [
+          ".sql"
+        ],
+        "aliases": [
+          "SQL"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "compile:tests": "tsc -p tsconfig.test.json",
+    "test": "npm run compile:tests && node --test dist-test/test/**/*.test.js",
+    "lint": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit",
+    "cli": "node dist/cli.js",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
+    "package:install": "npm run package && echo Install with: code --install-extension erd-workbench-0.1.0.vsix"
+  },
+  "bin": {
+    "erd-workbench": "./dist/cli.js"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.3.6",
+    "elkjs": "^0.9.3",
+    "mysql2": "^3.11.5",
+    "node-sql-parser": "^5.3.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-test",
+    "rootDir": ".",
+    "types": ["node"],
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*", "shared/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "webview", "dist-test"]
+}
