@@ -69,12 +69,34 @@ export class ReverseEngineerService {
       tables,
       capturedAt: cat.fetchedAt,
     };
+    const pageSize = vscode.workspace
+      .getConfiguration('erdWorkbench')
+      .get<number>('defaultDiagramPageSize', 40);
+    const autoPage = tables.length > pageSize;
+
     doc.filters = {
       ...doc.filters,
       schemas,
       showInferred: includeInferred,
       showViews: true,
+      // Large schemas must open in pages so content fits the viewport
+      pageMode: autoPage,
+      pageIndex: 0,
+      pageSize,
     };
+
+    if (autoPage) {
+      // Pack only the first page tightly; other pages get arranged when opened
+      const firstPage = nodes.slice(0, pageSize);
+      const cols = Math.max(1, Math.ceil(Math.sqrt(firstPage.length * 1.1)));
+      const gapX = 220;
+      const gapY = 118;
+      firstPage.forEach((n, i) => {
+        n.x = (i % cols) * gapX;
+        n.y = Math.floor(i / cols) * gapY;
+      });
+    }
+
     return doc;
   }
 }

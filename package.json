@@ -2,7 +2,7 @@
   "name": "erd-workbench",
   "displayName": "ERD Workbench",
   "description": "MySQL/MariaDB visual database IDE with interactive ERD, SQL execution, and AI-native MCP tools",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "erd-workbench",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -309,10 +309,10 @@
         },
         "erdWorkbench.defaultDiagramPageSize": {
           "type": "number",
-          "default": 50,
+          "default": 40,
           "minimum": 10,
-          "maximum": 500,
-          "description": "Default page size when diagram page mode is enabled for large schemas"
+          "maximum": 48,
+          "description": "Default page size for large schemas. Diagrams with more tables auto-enable paging so content fits the screen."
         }
       }
     },

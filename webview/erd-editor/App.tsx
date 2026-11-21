@@ -11,6 +11,7 @@ import {
   type Edge,
   type Node,
   type OnNodesChange,
+  type ReactFlowInstance,
   applyNodeChanges,
   type NodeChange,
 } from '@xyflow/react';
@@ -28,8 +29,11 @@ import { OrthogonalEdge } from './edges/OrthogonalEdge';
 const nodeTypes = { tableNode: TableNode };
 const edgeTypes = { orthogonal: OrthogonalEdge };
 
-const VIEWPORT_MARGIN = 400;
-const MAX_MOUNTED = 300;
+const VIEWPORT_MARGIN = 280;
+const MAX_MOUNTED = 80;
+/** Above this, force paging so the canvas stays on-screen */
+const AUTO_PAGE_THRESHOLD = 48;
+const DEFAULT_PAGE_SIZE = 40;
 
 export function App() {
   const [document, setDocument] = useState<ErdDocument | null>(null);
@@ -47,6 +51,14 @@ export function App() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const docRef = useRef<ErdDocument | null>(null);
   const hydrateRequested = useRef<Set<string>>(new Set());
+  const rfRef = useRef<ReactFlowInstance | null>(null);
+  const autoPagedRef = useRef(false);
+
+  const fitCanvas = useCallback((padding = 0.14) => {
+    requestAnimationFrame(() => {
+      rfRef.current?.fitView({ padding, maxZoom: 1, duration: 220 });
+    });
+  }, []);
 
   useEffect(() => {
     docRef.current = document;
@@ -61,20 +73,37 @@ export function App() {
       switch (msg.type) {
         case 'init':
         case 'documentChanged': {
-          const doc = msg.document;
+          let doc = msg.document;
+          // Force paging for large diagrams so content fits the screen
+          if (doc.nodes.length > AUTO_PAGE_THRESHOLD && !doc.filters.pageMode) {
+            doc = {
+              ...doc,
+              filters: {
+                ...doc.filters,
+                pageMode: true,
+                pageIndex: doc.filters.pageIndex ?? 0,
+                pageSize: doc.filters.pageSize ?? DEFAULT_PAGE_SIZE,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            if (!autoPagedRef.current) {
+              autoPagedRef.current = true;
+              post({ type: 'updateDocument', document: doc, reason: 'auto-page-large-schema' });
+            }
+          }
           setDocument(doc);
-          // Keep toolbar in sync for live agent edits too
           setSearch(doc.filters.search ?? '');
           setHideUnconnected(Boolean(doc.filters.hideUnconnected));
           setShowInferred(Boolean(doc.filters.showInferred));
           setShowViews(doc.filters.showViews !== false);
           if (msg.type === 'init') {
             setCatalog(msg.catalogSummary);
+            fitCanvas(0.12);
           }
-          const pageMode = doc.filters.pageMode
-            ? ` · page ${(doc.filters.pageIndex ?? 0) + 1}`
-            : '';
-          setStatus(`${doc.nodes.length} tables · ${doc.edges.length} edges${pageMode}`);
+          break;
+        }
+        case 'layoutResult': {
+          fitCanvas(0.12);
           break;
         }
         case 'hydrateColumns': {
@@ -106,7 +135,7 @@ export function App() {
     window.addEventListener('message', handler);
     post({ type: 'ready' });
     return () => window.removeEventListener('message', handler);
-  }, []);
+  }, [fitCanvas]);
 
   const catalogIndex = useMemo(() => {
     const map = new Map<string, CatalogTableSummary>();
@@ -134,11 +163,14 @@ export function App() {
       })
       .map((n) => n.tableId)
       .sort();
-    const pageMode = Boolean(document.filters.pageMode);
-    const pageSize = pageMode ? Math.max(10, document.filters.pageSize ?? 50) : ordered.length || 1;
+    const forcePages = ordered.length > AUTO_PAGE_THRESHOLD;
+    const pageMode = Boolean(document.filters.pageMode) || forcePages;
+    const pageSize = pageMode
+      ? Math.max(10, document.filters.pageSize ?? DEFAULT_PAGE_SIZE)
+      : ordered.length || 1;
     const pageCount = Math.max(1, Math.ceil(ordered.length / pageSize));
     const pageIndex = Math.min(Math.max(0, document.filters.pageIndex ?? 0), pageCount - 1);
-    return { pageIndex, pageSize, pageCount, total: ordered.length, ordered };
+    return { pageIndex, pageSize, pageCount, total: ordered.length, ordered, pageMode, forcePages };
   }, [document, search, showViews, catalogIndex]);
 
   const filteredTableIds = useMemo(() => {
@@ -175,7 +207,8 @@ export function App() {
       })
       .map((n) => n.tableId);
 
-    if (document.filters.pageMode) {
+    // Always page large sets — never paint 100+ tables off-screen at once
+    if (pageInfo.pageMode) {
       const start = pageInfo.pageIndex * pageInfo.pageSize;
       const pageSet = new Set((pageInfo.ordered ?? ids).slice(start, start + pageInfo.pageSize));
       ids = ids.filter((id) => pageSet.has(id));
@@ -183,6 +216,14 @@ export function App() {
 
     return new Set(ids);
   }, [document, search, hideUnconnected, showInferred, showViews, catalogIndex, pageInfo]);
+
+  // Refit when page changes
+  useEffect(() => {
+    if (!document) {
+      return;
+    }
+    fitCanvas(0.12);
+  }, [document?.filters.pageIndex, document?.filters.pageMode, document?.filters.pageSize, fitCanvas]);
 
   // Build visible nodes with viewport culling
   useEffect(() => {
@@ -339,8 +380,29 @@ export function App() {
   }, [hydrated]);
 
   const autoLayout = () => {
-    const ids = nodes.filter((n) => n.selected).map((n) => n.id);
+    const selected = nodes.filter((n) => n.selected).map((n) => n.id);
+    // Layout only what's on screen (selection or current page)
+    const ids = selected.length ? selected : [...filteredTableIds];
     post({ type: 'requestAutoLayout', tableIds: ids });
+  };
+
+  const compactLayout = () => {
+    const ids = [...filteredTableIds];
+    const doc = docRef.current;
+    if (!doc || !ids.length) {
+      return;
+    }
+    const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length * 1.1)));
+    const gapX = 220;
+    const gapY = 118;
+    const map = new Map(ids.map((id, i) => [id, { x: (i % cols) * gapX, y: Math.floor(i / cols) * gapY }]));
+    const nextNodes = doc.nodes.map((n) => {
+      const p = map.get(n.tableId);
+      return p ? { ...n, x: p.x, y: p.y } : n;
+    });
+    const next = { ...doc, nodes: nextNodes, updatedAt: new Date().toISOString() };
+    scheduleSave(next);
+    fitCanvas(0.1);
   };
 
   const onConnect = useCallback((connection: Connection) => {
@@ -457,23 +519,31 @@ export function App() {
             />
             Views
           </label>
-          <label className={`chip ${document.filters.pageMode ? 'is-on' : ''}`}>
+          <label
+            className={`chip ${pageInfo.pageMode ? 'is-on' : ''}`}
+            title={
+              pageInfo.forcePages
+                ? `Pages required for ${pageInfo.total} tables (max ${AUTO_PAGE_THRESHOLD} on screen)`
+                : 'Show tables in pages'
+            }
+          >
             <input
               type="checkbox"
-              checked={Boolean(document.filters.pageMode)}
+              checked={pageInfo.pageMode}
+              disabled={pageInfo.forcePages}
               onChange={(e) => {
                 persistFilters({
                   pageMode: e.target.checked,
                   pageIndex: 0,
-                  pageSize: document.filters.pageSize ?? 50,
+                  pageSize: document.filters.pageSize ?? DEFAULT_PAGE_SIZE,
                 });
               }}
             />
-            Pages
+            Pages{pageInfo.forcePages ? ' (auto)' : ''}
           </label>
         </div>
 
-        {document.filters.pageMode && (
+        {pageInfo.pageMode && (
           <div className="erd-toolbar__group">
             <button
               type="button"
@@ -496,11 +566,15 @@ export function App() {
               type="button"
               onClick={() =>
                 persistFilters({
-                  pageSize: Math.max(
-                    10,
-                    Number(window.prompt('Page size', String(pageInfo.pageSize)) || pageInfo.pageSize)
+                  pageSize: Math.min(
+                    AUTO_PAGE_THRESHOLD,
+                    Math.max(
+                      10,
+                      Number(window.prompt('Page size', String(pageInfo.pageSize)) || pageInfo.pageSize)
+                    )
                   ),
                   pageIndex: 0,
+                  pageMode: true,
                 })
               }
             >
@@ -509,18 +583,21 @@ export function App() {
           </div>
         )}
 
-        <button type="button" className="primary" onClick={autoLayout}>
+        <button type="button" className="primary" onClick={autoLayout} title="Layout current page only">
           Auto-layout
         </button>
-        <button
-          type="button"
-          onClick={() => post({ type: 'requestAutoLayout', tableIds: [] })}
-          title="Arrange current page/filter as a compact grid via host layout"
-        >
+        <button type="button" onClick={compactLayout} title="Pack current page into a tight grid">
           Compact layout
         </button>
+        <button type="button" onClick={() => fitCanvas(0.1)} title="Fit current page to screen">
+          Fit screen
+        </button>
 
-        <span className="erd-toolbar__meta">Zoom detail: {lod}</span>
+        <span className="erd-toolbar__meta">
+          {pageInfo.pageMode
+            ? `${filteredTableIds.size}/${pageInfo.total} · p${pageInfo.pageIndex + 1}`
+            : `detail: ${lod}`}
+        </span>
       </div>
 
       <div className="erd-canvas-wrap">
@@ -536,6 +613,7 @@ export function App() {
             setViewport((v) => ({ ...v, x: vp.x, y: vp.y, zoom: vp.zoom }));
           }}
           onInit={(instance) => {
+            rfRef.current = instance;
             const el = window.document.querySelector('.erd-canvas-wrap');
             if (el) {
               const ro = new ResizeObserver((entries) => {
@@ -546,22 +624,15 @@ export function App() {
               });
               ro.observe(el);
             }
-            // Fit lightly on first open if viewport is default origin
-            if (document.viewport.zoom === 1 && document.viewport.x === 0 && document.viewport.y === 0) {
-              requestAnimationFrame(() => instance.fitView({ padding: 0.12, maxZoom: 1 }));
-            }
+            fitCanvas(0.12);
           }}
-          minZoom={0.05}
-          maxZoom={2}
+          minZoom={0.08}
+          maxZoom={1.75}
           onlyRenderVisibleElements
           selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode="Shift"
-          fitView={false}
-          defaultViewport={{
-            x: document.viewport.x,
-            y: document.viewport.y,
-            zoom: document.viewport.zoom || 1,
-          }}
+          fitView
+          fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
           proOptions={{ hideAttribution: true }}
           defaultEdgeOptions={{
             type: 'orthogonal',
@@ -582,13 +653,17 @@ export function App() {
 
       <div className="erd-footer">
         <div>
-          <strong>{status}</strong>
-          {document.filters.pageMode
+          <strong>
+            {filteredTableIds.size} on screen
+          </strong>
+          {` · ${pageInfo.total} total`}
+          {pageInfo.pageMode
             ? ` · page ${pageInfo.pageIndex + 1}/${pageInfo.pageCount}`
             : ''}
+          {pageInfo.forcePages ? ' · pages auto-enabled' : ''}
         </div>
         <div className="erd-footer__hint">
-          Drag tables · Shift+select · Connect handles for relationships · Pages for large schemas
+          Use Pages ‹ › for large schemas · Fit screen · Auto-layout applies to current page only
         </div>
       </div>
     </div>

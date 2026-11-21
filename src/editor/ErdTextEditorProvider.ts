@@ -9,6 +9,7 @@ import {
 import { SchemaCatalogService } from '../schema/SchemaCatalogService';
 import { MutationPipeline } from '../mutation/MutationPipeline';
 import { layoutSubgraph } from '../diagram/layout';
+import { pageNodes as currentPageNodes } from '../diagram/paging';
 
 export class ErdTextEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'erdWorkbench.diagram';
@@ -114,11 +115,16 @@ export class ErdTextEditorProvider implements vscode.CustomTextEditorProvider {
           .get<number>('autoLayoutNodeCap', 300);
         const selected = new Set(msg.tableIds);
         let nodes = doc.nodes.filter((n) => selected.has(n.tableId));
-        if (nodes.length > cap) {
-          throw new Error(`Auto-layout capped at ${cap} nodes (selected ${nodes.length})`);
+        // Prefer current page when page mode is on and nothing selected
+        if (!nodes.length && doc.filters.pageMode) {
+          nodes = currentPageNodes(doc);
         }
         if (!nodes.length) {
-          nodes = doc.nodes.filter((n) => !n.pinned).slice(0, cap);
+          // Never lay out hundreds at once — keep viewport usable
+          nodes = doc.nodes.filter((n) => !n.pinned).slice(0, Math.min(cap, 48));
+        }
+        if (nodes.length > cap) {
+          nodes = nodes.slice(0, cap);
         }
         const idSet = new Set(nodes.map((n) => n.tableId));
         const edges = doc.edges.filter(

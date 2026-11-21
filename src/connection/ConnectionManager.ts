@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as mysql from 'mysql2/promise';
 import type { ConnectionProfile, ConnectionState, SslMode } from '../../shared/types';
+import { QueryCancelledError } from '../sql/execution/QueryCancelledError';
 
 export interface ActiveConnection {
   profile: ConnectionProfile;
@@ -165,15 +166,84 @@ export class ConnectionManager {
     sql: string,
     params?: unknown[]
   ): Promise<[T, mysql.FieldPacket[]]> {
+    return this.queryCancellable(connectionId, sql, { params });
+  }
+
+  /**
+   * Run a single statement on a dedicated pool connection so it can be cancelled.
+   * On abort: issues KILL QUERY via a second connection, then destroys the worker connection.
+   */
+  async queryCancellable<T extends mysql.RowDataPacket[] = mysql.RowDataPacket[]>(
+    connectionId: string,
+    sql: string,
+    options?: { params?: unknown[]; signal?: AbortSignal }
+  ): Promise<[T, mysql.FieldPacket[]]> {
     const active = this.active.get(connectionId);
     if (!active || active.state !== 'connected') {
       throw new Error('Not connected');
     }
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      throw new QueryCancelledError();
+    }
+
+    let conn: mysql.PoolConnection | undefined;
+    let killIssued = false;
+    const onAbort = () => {
+      if (!conn || killIssued) {
+        return;
+      }
+      killIssued = true;
+      const threadId = conn.threadId;
+      void this.killQuery(connectionId, threadId).finally(() => {
+        try {
+          conn?.destroy();
+        } catch {
+          // already closed
+        }
+      });
+    };
+
     try {
-      return (await active.pool.query<T>(sql, params)) as [T, mysql.FieldPacket[]];
+      conn = await active.pool.getConnection();
+      if (signal?.aborted) {
+        conn.release();
+        throw new QueryCancelledError();
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      const result = (await conn.query<T>(sql, options?.params)) as [T, mysql.FieldPacket[]];
+      if (signal?.aborted || killIssued) {
+        throw new QueryCancelledError();
+      }
+      return result;
     } catch (err) {
+      if (signal?.aborted || killIssued || isMysqlQueryInterrupted(err)) {
+        throw new QueryCancelledError(err instanceof Error ? err.message : 'Query cancelled');
+      }
       await this.handleQueryError(connectionId, err);
       throw err;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      if (conn && !killIssued) {
+        conn.release();
+      }
+    }
+  }
+
+  /** Best-effort KILL QUERY on a separate pool connection. */
+  async killQuery(connectionId: string, threadId: number): Promise<void> {
+    if (!Number.isFinite(threadId) || threadId <= 0) {
+      return;
+    }
+    const active = this.active.get(connectionId);
+    if (!active || active.state !== 'connected') {
+      return;
+    }
+    try {
+      await active.pool.query(`KILL QUERY ${threadId}`);
+    } catch {
+      // Thread may already have finished; ignore.
     }
   }
 
@@ -327,4 +397,20 @@ export class ConnectionManager {
     }
     this.onDidChangeEmitter.dispose();
   }
+}
+
+function isMysqlQueryInterrupted(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  const code =
+    err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : '';
+  const errno =
+    err && typeof err === 'object' && 'errno' in err ? Number((err as { errno: unknown }).errno) : 0;
+  return (
+    errno === 1317 ||
+    errno === 1836 ||
+    code === 'ER_QUERY_INTERRUPTED' ||
+    /Query execution was interrupted|Query cancelled|CONNECTION_CLOSED|PROTOCOL_CONNECTION_LOST/i.test(
+      message
+    )
+  );
 }

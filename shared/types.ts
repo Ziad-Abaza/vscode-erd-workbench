@@ -238,6 +238,47 @@ export interface SchemaDiff {
   items: SchemaDiffItem[];
 }
 
+/** Structured SQL runner result (host + results webview). */
+export interface QueryResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  affectedRows?: number;
+  truncated: boolean;
+  risk: SqlRiskClass;
+  statementSql?: string;
+  durationMs?: number;
+}
+
+export type SqlRunStatus = 'running' | 'completed' | 'error' | 'cancelled';
+
+export interface SqlRunSnapshot {
+  runId: string;
+  connectionId: string;
+  connectionName: string;
+  sqlPreview: string;
+  status: SqlRunStatus;
+  startedAt: string;
+  finishedAt?: string;
+  results: QueryResult[];
+  error?: string;
+  totalDurationMs?: number;
+}
+
+/** Host ↔ SQL Results webview protocol (separate from ERD editor). */
+export type SqlResultsHostMessage =
+  | { type: 'init'; theme: 'light' | 'dark'; run?: SqlRunSnapshot }
+  | { type: 'runStarted'; run: SqlRunSnapshot }
+  | { type: 'runProgress'; runId: string; message: string }
+  | { type: 'runCompleted'; run: SqlRunSnapshot }
+  | { type: 'runError'; run: SqlRunSnapshot }
+  | { type: 'runCancelled'; run: SqlRunSnapshot }
+  | { type: 'theme'; theme: 'light' | 'dark' };
+
+export type SqlResultsWebviewMessage =
+  | { type: 'ready' }
+  | { type: 'cancelRun'; runId: string }
+  | { type: 'copyTsv'; resultIndex: number };
+
 /** Host ↔ webview protocol */
 export type HostToWebviewMessage =
   | { type: 'init'; document: ErdDocument; catalogSummary: CatalogTableSummary[]; theme: 'light' | 'dark' }

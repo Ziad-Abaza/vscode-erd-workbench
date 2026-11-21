@@ -1,0 +1,228 @@
+:root {
+  color-scheme: light dark;
+  --sr-bg: var(--vscode-editor-background, #1e1e1e);
+  --sr-fg: var(--vscode-editor-foreground, #cccccc);
+  --sr-border: var(--vscode-panel-border, #3c3c3c);
+  --sr-header: var(--vscode-editorGroupHeader-tabsBackground, #252526);
+  --sr-muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --sr-row-alt: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.04));
+  --sr-null: var(--vscode-editorLineNumber-foreground, #858585);
+  --sr-btn: var(--vscode-button-background, #0e639c);
+  --sr-btn-fg: var(--vscode-button-foreground, #ffffff);
+  --sr-btn-sec: var(--vscode-button-secondaryBackground, #3a3d41);
+  --sr-danger: var(--vscode-inputValidation-errorBorder, #f14c4c);
+  --sr-ok: var(--vscode-testing-iconPassed, #89d185);
+  --sr-warn: var(--vscode-editorWarning-foreground, #cca700);
+  --sr-font: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+  --sr-ui-font: var(--vscode-font-family, Segoe UI, sans-serif);
+  --sr-font-size: var(--vscode-editor-font-size, 12px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--sr-bg);
+  color: var(--sr-fg);
+  font-family: var(--sr-ui-font);
+  font-size: 12px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--sr-border);
+  background: var(--sr-header);
+}
+
+.toolbar .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  color: var(--sr-muted);
+}
+
+.toolbar .sql-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 42vw;
+  font-family: var(--sr-font);
+  color: var(--sr-fg);
+}
+
+.status {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 11px;
+}
+
+.status.running {
+  color: var(--sr-warn);
+}
+
+.status.completed {
+  color: var(--sr-ok);
+}
+
+.status.error {
+  color: var(--sr-danger);
+}
+
+.status.cancelled {
+  color: var(--sr-muted);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+}
+
+button {
+  border: none;
+  border-radius: 2px;
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+  background: var(--sr-btn-sec);
+  color: var(--sr-fg);
+}
+
+button.primary {
+  background: var(--sr-btn);
+  color: var(--sr-btn-fg);
+}
+
+button.danger {
+  background: transparent;
+  color: var(--sr-danger);
+  border: 1px solid var(--sr-danger);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--sr-border);
+  overflow-x: auto;
+}
+
+.tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--sr-muted);
+}
+
+.tab.active {
+  background: var(--sr-bg);
+  color: var(--sr-fg);
+  border-color: var(--sr-border);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.message {
+  padding: 16px;
+  color: var(--sr-muted);
+}
+
+.message.error {
+  color: var(--sr-danger);
+}
+
+.grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+table.results {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-family: var(--sr-font);
+  font-size: var(--sr-font-size);
+}
+
+table.results th,
+table.results td {
+  border: 1px solid var(--sr-border);
+  padding: 3px 8px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.results th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sr-header);
+  font-weight: 600;
+}
+
+table.results tr:nth-child(even) td {
+  background: var(--sr-row-alt);
+}
+
+.row-num {
+  color: var(--sr-null);
+  text-align: right !important;
+  user-select: none;
+  width: 1%;
+}
+
+.null {
+  color: var(--sr-null);
+  font-style: italic;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--sr-border);
+  color: var(--sr-muted);
+  font-size: 11px;
+}
+
+.affected {
+  padding: 20px;
+  font-family: var(--sr-font);
+}
